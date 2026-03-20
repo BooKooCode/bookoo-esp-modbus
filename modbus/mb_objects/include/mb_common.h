@@ -112,6 +112,8 @@ extern "C" {
 typedef struct mb_command_entry_s {
     uint8_t func_code;                          /*!< function code */
     mb_fn_handler_fp handler;                   /*!< handler function pointer */
+    uint16_t reg_start;                         /*!< register range start address (0 if no range restriction) */
+    uint16_t reg_len;                           /*!< register range length (0 = wildcard, matches any address) */
     LIST_ENTRY(mb_command_entry_s) entries;     /*!< command handler entry */
 } mb_command_entry_t;
 
@@ -175,6 +177,14 @@ mb_err_enum_t mb_set_handler(handler_descriptor_t *descriptor, uint8_t func_code
 mb_err_enum_t mb_get_handler(handler_descriptor_t *descriptor, uint8_t func_code, mb_fn_handler_fp *handler);
 mb_err_enum_t mb_delete_handler(handler_descriptor_t *descriptor, uint8_t func_code);
 mb_err_enum_t mb_delete_command_handlers(handler_descriptor_t *descriptor);
+
+// Range-aware handler registration helpers
+mb_err_enum_t mb_set_handler_range(handler_descriptor_t *descriptor, uint8_t func_code,
+                                   uint16_t reg_start, uint16_t reg_len, mb_fn_handler_fp handler);
+mb_err_enum_t mb_get_handler_by_addr(handler_descriptor_t *descriptor, uint8_t func_code,
+                                     uint16_t reg_addr, mb_fn_handler_fp *handler);
+mb_err_enum_t mb_delete_handler_range(handler_descriptor_t *descriptor, uint8_t func_code,
+                                      uint16_t reg_start, uint16_t reg_len);
 
 #if (CONFIG_FMB_COMM_MODE_ASCII_EN || CONFIG_FMB_COMM_MODE_RTU_EN)
 

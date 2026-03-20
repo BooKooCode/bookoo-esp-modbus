@@ -27,6 +27,7 @@
 #include "mb_common.h"              // for mb types definition
 #include "mb_config.h"
 #include "mb_proto.h"
+#include "mb_master.h"              // for mbm_get_handler_by_addr, mbm_set_pending_custom_handler
 #include "mb_port_types.h"
 
 #if MB_MASTER_TCP_ENABLED
@@ -158,7 +159,17 @@ static esp_err_t mbc_tcp_master_set_descriptor(void *ctx, const mb_parameter_des
 }
 
 // Send custom Modbus request defined as mb_param_request_t structure
-static esp_err_t mbc_tcp_master_send_request(void *ctx, mb_param_request_t *request, void *data_ptr)
+static uint32_t mbc_tcp_master_get_request_timeout_ms(void *ctx, uint32_t timeout_ms)
+{
+    mb_master_options_t *mbm_opts = MB_MASTER_GET_OPTS(ctx);
+    uint32_t effective_timeout_ms = timeout_ms ? timeout_ms : mbm_opts->comm_opts.tcp_opts.response_tout_ms;
+    if (!effective_timeout_ms) {
+        effective_timeout_ms = MB_MASTER_TIMEOUT_MS_RESPOND;
+    }
+    return effective_timeout_ms;
+}
+
+static esp_err_t mbc_tcp_master_send_request_internal(void *ctx, mb_param_request_t *request, void *data_ptr, uint32_t timeout_ms)
 {
     mb_master_options_t *mbm_opts = MB_MASTER_GET_OPTS(ctx);
     mbm_controller_iface_t *mbm_controller_iface = MB_MASTER_GET_IFACE(ctx);
@@ -166,12 +177,17 @@ static esp_err_t mbc_tcp_master_send_request(void *ctx, mb_param_request_t *requ
     MB_RETURN_ON_FALSE((data_ptr), ESP_ERR_INVALID_ARG, TAG, "mb incorrect data pointer.");
 
     mb_err_enum_t mb_error = MB_EBUSY;
+    uint32_t effective_timeout_ms = mbc_tcp_master_get_request_timeout_ms(ctx, timeout_ms);
+    TickType_t timeout_ticks = pdMS_TO_TICKS(effective_timeout_ms);
+    BaseType_t semaphore_taken = xSemaphoreTake(mbm_opts->mbm_sema, timeout_ticks);
 
-    if (xSemaphoreTake(mbm_opts->mbm_sema, pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS)) == pdTRUE) {
+    if (semaphore_taken == pdTRUE) {
         uint8_t mb_slave_addr = request->slave_addr;
         uint8_t mb_command = request->command;
         uint16_t mb_offset = request->reg_start;
         uint16_t mb_size = request->reg_size;
+
+        mb_port_timer_set_response_time(mbm_controller_iface->mb_base->port_obj, effective_timeout_ms);
 
         // Set the buffer for callback function processing of received data
         mbm_opts->reg_buffer_ptr = (uint8_t *)data_ptr;
@@ -182,7 +198,7 @@ static esp_err_t mbc_tcp_master_send_request(void *ctx, mb_param_request_t *requ
 #if MB_FUNC_READ_COILS_ENABLED
         case MB_FUNC_READ_COILS:
             mb_error = mbm_rq_read_coils(mbm_controller_iface->mb_base, mb_slave_addr,
-                                         mb_offset, mb_size, pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
+                                         mb_offset, mb_size, timeout_ticks);
             break;
 #endif
 
@@ -190,7 +206,7 @@ static esp_err_t mbc_tcp_master_send_request(void *ctx, mb_param_request_t *requ
         case MB_FUNC_WRITE_SINGLE_COIL:
             mb_error = mbm_rq_write_coil(mbm_controller_iface->mb_base, mb_slave_addr, mb_offset,
                                          *(uint16_t *)data_ptr,
-                                         pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
+                                         timeout_ticks);
             break;
 #endif
 
@@ -198,21 +214,21 @@ static esp_err_t mbc_tcp_master_send_request(void *ctx, mb_param_request_t *requ
         case MB_FUNC_WRITE_MULTIPLE_COILS:
             mb_error = mbm_rq_write_multi_coils(mbm_controller_iface->mb_base, mb_slave_addr, mb_offset,
                                                 mb_size, (uint8_t *)data_ptr,
-                                                pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
+                                                timeout_ticks);
             break;
 #endif
 
 #if MB_FUNC_READ_DISCRETE_INPUTS_ENABLED
         case MB_FUNC_READ_DISCRETE_INPUTS:
             mb_error = mbm_rq_read_discrete_inputs(mbm_controller_iface->mb_base, mb_slave_addr, mb_offset,
-                                                   mb_size, pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
+                                                   mb_size, timeout_ticks);
             break;
 #endif
 
 #if MB_FUNC_READ_HOLDING_ENABLED
         case MB_FUNC_READ_HOLDING_REGISTER:
             mb_error = mbm_rq_read_holding_reg(mbm_controller_iface->mb_base, mb_slave_addr, mb_offset,
-                                               mb_size, pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
+                                               mb_size, timeout_ticks);
             break;
 #endif
 
@@ -220,39 +236,43 @@ static esp_err_t mbc_tcp_master_send_request(void *ctx, mb_param_request_t *requ
         case MB_FUNC_WRITE_REGISTER:
             mb_error = mbm_rq_write_holding_reg(mbm_controller_iface->mb_base, mb_slave_addr, mb_offset,
                                                 *(uint16_t *)data_ptr,
-                                                pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
+                                                timeout_ticks);
             break;
 #endif
 
 #if MB_FUNC_WRITE_MULTIPLE_HOLDING_ENABLED
         case MB_FUNC_WRITE_MULTIPLE_REGISTERS:
             mb_error = mbm_rq_write_multi_holding_reg(mbm_controller_iface->mb_base, mb_slave_addr,
-                       mb_offset, mb_size, (uint16_t *)data_ptr, pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
+                       mb_offset, mb_size, (uint16_t *)data_ptr, timeout_ticks);
             break;
 #endif
 
 #if MB_FUNC_READWRITE_HOLDING_ENABLED
         case MB_FUNC_READWRITE_MULTIPLE_REGISTERS:
             mb_error = mbm_rq_rw_multi_holding_reg(mbm_controller_iface->mb_base, mb_slave_addr, mb_offset,
-                                                   mb_size, (uint16_t *)data_ptr, mb_offset, mb_size, pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
+                                                   mb_size, (uint16_t *)data_ptr, mb_offset, mb_size, timeout_ticks);
             break;
 #endif
 
 #if MB_FUNC_READ_INPUT_ENABLED
         case MB_FUNC_READ_INPUT_REGISTER:
             mb_error = mbm_rq_read_inp_reg(mbm_controller_iface->mb_base, mb_slave_addr, mb_offset,
-                                           mb_size, pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
+                                           mb_size, timeout_ticks);
             break;
 #endif
         default:
             mb_fn_handler_fp handler = NULL;
-            // check registered function handler
-            mb_error = mbm_get_handler(mbm_controller_iface->mb_base, mb_command, &handler);
+            // Range-aware handler lookup: find handler matching (func_code, reg_start)
+            mb_error = mbm_get_handler_by_addr(mbm_controller_iface->mb_base, mb_command, mb_offset, &handler);
             if (mb_error == MB_ENOERR) {
+                // Store as pending so mbm_check_invoke_handler uses the correct range handler
+                mbm_set_pending_custom_handler(mbm_controller_iface->mb_base, mb_command, handler);
                 // send the request for custom command
                 mb_error = mbm_rq_custom(mbm_controller_iface->mb_base, mb_slave_addr, mb_command,
                                          data_ptr, (uint16_t)(mb_size << 1),
-                                         pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
+                                         timeout_ticks);
+                // Always clear pending handler (on both success and timeout)
+                mbm_clear_pending_custom_handler(mbm_controller_iface->mb_base);
                 ESP_LOGD(TAG, "%s: Send custom request (%u)", __FUNCTION__, mb_command);
             } else {
                 ESP_LOGE(TAG, "%s: Incorrect or unsupported function in request (%u), error = (0x%x) ", __FUNCTION__, mb_command, (int)mb_error);
@@ -261,12 +281,25 @@ static esp_err_t mbc_tcp_master_send_request(void *ctx, mb_param_request_t *requ
             break;
         }
     } else {
-        ESP_LOGD(TAG, "%s:MBC semaphore take fail.", __func__);
+        ESP_LOGD(TAG, "%s:MBC semaphore take timeout (%lu ms).", __func__, (unsigned long)effective_timeout_ms);
+        mb_error = MB_ETIMEDOUT;
     }
-    (void)xSemaphoreGive(mbm_opts->mbm_sema);
+    if (semaphore_taken == pdTRUE) {
+        (void)xSemaphoreGive(mbm_opts->mbm_sema);
+    }
 
     // Propagate the Modbus errors to higher level
     return MB_ERR_TO_ESP_ERR(mb_error);
+}
+
+static esp_err_t mbc_tcp_master_send_request(void *ctx, mb_param_request_t *request, void *data_ptr)
+{
+    return mbc_tcp_master_send_request_internal(ctx, request, data_ptr, 0);
+}
+
+static esp_err_t mbc_tcp_master_send_request_with_timeout(void *ctx, mb_param_request_t *request, void *data_ptr, uint32_t timeout_ms)
+{
+    return mbc_tcp_master_send_request_internal(ctx, request, data_ptr, timeout_ms);
 }
 
 static esp_err_t mbc_tcp_master_get_cid_info(void *ctx, uint16_t cid, const mb_parameter_descriptor_t **param_buffer)
@@ -316,18 +349,27 @@ static esp_err_t mbc_tcp_master_set_request(void *ctx, uint16_t cid, mb_param_mo
 }
 
 // Get parameter data for corresponding characteristic
-static esp_err_t mbc_tcp_master_get_parameter(void *ctx, uint16_t cid, uint8_t *value, uint8_t *type)
+static esp_err_t mbc_tcp_master_get_parameter_internal(void *ctx, uint16_t cid, uint8_t uid,
+        bool use_uid, uint8_t *value, uint8_t *type, uint32_t timeout_ms)
 {
     MB_RETURN_ON_FALSE((type), ESP_ERR_INVALID_ARG, TAG, "type pointer is incorrect.");
     MB_RETURN_ON_FALSE((value), ESP_ERR_INVALID_ARG, TAG, "value pointer is incorrect.");
     mbm_controller_iface_t *mbm_controller_iface = MB_MASTER_GET_IFACE(ctx);
     esp_err_t error = ESP_ERR_INVALID_RESPONSE;
-    mb_param_request_t request ;
+    mb_param_request_t request;
     mb_parameter_descriptor_t reg_info = { 0 };
     uint8_t *data_ptr = NULL;
 
     error = mbc_tcp_master_set_request(ctx, cid, MB_PARAM_READ, &request, &reg_info);
-    if ((error == ESP_OK) && (cid == reg_info.cid) && (request.slave_addr != MB_SLAVE_ADDR_PLACEHOLDER)) {
+    if ((error == ESP_OK) && (cid == reg_info.cid)
+            && (use_uid || (request.slave_addr != MB_SLAVE_ADDR_PLACEHOLDER))) {
+        if (use_uid) {
+            if (request.slave_addr != MB_SLAVE_ADDR_PLACEHOLDER) {
+                ESP_LOGD(TAG, "%s: override uid %d = %d for cid(%u)",
+                         __FUNCTION__, (int)request.slave_addr, (int)uid, (unsigned)reg_info.cid);
+            }
+            request.slave_addr = uid;
+        }
         mb_uid_info_t *addr_info = mbm_port_tcp_get_slave_info(mbm_controller_iface->mb_base->port_obj,
                                    request.slave_addr, MB_SOCK_STATE_CONNECTED);
         if (!addr_info) {
@@ -340,7 +382,7 @@ static esp_err_t mbc_tcp_master_get_parameter(void *ctx, uint16_t cid, uint8_t *
         if (!data_ptr) {
             return ESP_ERR_INVALID_STATE;
         }
-        error = mbc_tcp_master_send_request(ctx, &request, data_ptr);
+        error = mbc_tcp_master_send_request_internal(ctx, &request, data_ptr, timeout_ms);
         if (error == ESP_OK) {
             // If data pointer is NULL then we don't need to set value (it is still in the cache of cid)
             if (value) {
@@ -370,78 +412,49 @@ static esp_err_t mbc_tcp_master_get_parameter(void *ctx, uint16_t cid, uint8_t *
 }
 
 // Get parameter data for corresponding characteristic
+static esp_err_t mbc_tcp_master_get_parameter(void *ctx, uint16_t cid, uint8_t *value, uint8_t *type)
+{
+    return mbc_tcp_master_get_parameter_internal(ctx, cid, 0, false, value, type, 0);
+}
+
+static esp_err_t mbc_tcp_master_get_parameter_with_timeout(void *ctx, uint16_t cid, uint8_t *value, uint8_t *type, uint32_t timeout_ms)
+{
+    return mbc_tcp_master_get_parameter_internal(ctx, cid, 0, false, value, type, timeout_ms);
+}
+
+// Get parameter data for corresponding characteristic
 static esp_err_t mbc_tcp_master_get_parameter_with(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type)
 {
-    MB_RETURN_ON_FALSE((type), ESP_ERR_INVALID_ARG, TAG, "type pointer is incorrect.");
+    return mbc_tcp_master_get_parameter_internal(ctx, cid, uid, true, value, type, 0);
+}
+
+static esp_err_t mbc_tcp_master_get_parameter_with_uid_timeout(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type, uint32_t timeout_ms)
+{
+    return mbc_tcp_master_get_parameter_internal(ctx, cid, uid, true, value, type, timeout_ms);
+}
+
+// Set parameter value for characteristic selected by name and cid
+static esp_err_t mbc_tcp_master_set_parameter_internal(void *ctx, uint16_t cid, uint8_t uid,
+        bool use_uid, uint8_t *value, uint8_t *type, uint32_t timeout_ms)
+{
     MB_RETURN_ON_FALSE((value), ESP_ERR_INVALID_ARG, TAG, "value pointer is incorrect.");
+    MB_RETURN_ON_FALSE((type), ESP_ERR_INVALID_ARG, TAG, "type pointer is incorrect.");
     mbm_controller_iface_t *mbm_controller_iface = MB_MASTER_GET_IFACE(ctx);
     esp_err_t error = ESP_ERR_INVALID_RESPONSE;
     mb_param_request_t request;
     mb_parameter_descriptor_t reg_info = { 0 };
     uint8_t *data_ptr = NULL;
 
-    error = mbc_tcp_master_set_request(ctx, cid, MB_PARAM_READ, &request, &reg_info);
-    if ((error == ESP_OK) && (cid == reg_info.cid)) {
-        // check that the requested uid is connected (call to port iface)
-        mb_uid_info_t *addr_info = mbm_port_tcp_get_slave_info(mbm_controller_iface->mb_base->port_obj,
-                                   uid, MB_SOCK_STATE_CONNECTED);
-        if (!addr_info) {
-            ESP_LOGW(TAG, "Try to send request for cid #%u with uid = %d, node is disconnected.",
-                     (unsigned)reg_info.cid, (int)request.slave_addr);
-        }
-        if (request.slave_addr != MB_SLAVE_ADDR_PLACEHOLDER) {
-            ESP_LOGD(TAG, "%s: override uid %d = %d for cid(%u)",
-                     __FUNCTION__, (int)request.slave_addr, (int)uid, (unsigned)reg_info.cid);
-        }
-        request.slave_addr = uid; // override the UID
-        MB_MASTER_ASSERT(xPortGetFreeHeapSize() > (reg_info.mb_size << 1));
-        // alloc buffer to store parameter data
-        data_ptr = calloc(1, (reg_info.mb_size << 1));
-        if (!data_ptr) {
-            return ESP_ERR_INVALID_STATE;
-        }
-        error = mbc_tcp_master_send_request(ctx, &request, data_ptr);
-        if (error == ESP_OK) {
-            // If data pointer is NULL then we don't need to set value (it is still in the cache of cid)
-            if (value) {
-                error = mbc_master_set_param_data((void *)value, (void *)data_ptr,
-                                                  reg_info.param_type, reg_info.param_size);
-                if (error != ESP_OK) {
-                    ESP_LOGE(TAG, "fail to set parameter data.");
-                    error = ESP_ERR_INVALID_STATE;
-                } else {
-                    ESP_LOGD(TAG, "%s: Good response for get cid(%u) = %s",
-                             __FUNCTION__, (unsigned)reg_info.cid, (char *)esp_err_to_name(error));
-                }
-            }
-        } else {
-            ESP_LOGD(TAG, "%s: Bad response to get cid(%u) = %s",
-                     __FUNCTION__, (unsigned)reg_info.cid, (char *)esp_err_to_name(error));
-        }
-        free(data_ptr);
-        // Set the type of parameter found in the table
-        *type = reg_info.param_type;
-    } else {
-        ESP_LOGE(TAG, "%s: The cid(%u) address information is not found in the data dictionary.",
-                 __FUNCTION__, (unsigned)reg_info.cid);
-        error = ESP_ERR_INVALID_ARG;
-    }
-    return error;
-}
-
-// Set parameter value for characteristic selected by name and cid
-static esp_err_t mbc_tcp_master_set_parameter(void *ctx, uint16_t cid, uint8_t *value, uint8_t *type)
-{
-    MB_RETURN_ON_FALSE((value), ESP_ERR_INVALID_ARG, TAG, "value pointer is incorrect.");
-    MB_RETURN_ON_FALSE((type), ESP_ERR_INVALID_ARG, TAG, "type pointer is incorrect.");
-    mbm_controller_iface_t *mbm_controller_iface = MB_MASTER_GET_IFACE(ctx);
-    esp_err_t error = ESP_ERR_INVALID_RESPONSE;
-    mb_param_request_t request ;
-    mb_parameter_descriptor_t reg_info = { 0 };
-    uint8_t *data_ptr = NULL;
-
     error = mbc_tcp_master_set_request(ctx, cid, MB_PARAM_WRITE, &request, &reg_info);
-    if ((error == ESP_OK) && (cid == reg_info.cid) && (request.slave_addr != MB_SLAVE_ADDR_PLACEHOLDER)) {
+    if ((error == ESP_OK) && (cid == reg_info.cid)
+            && (use_uid || (request.slave_addr != MB_SLAVE_ADDR_PLACEHOLDER))) {
+        if (use_uid) {
+            if (request.slave_addr != MB_SLAVE_ADDR_PLACEHOLDER) {
+                ESP_LOGD(TAG, "%s: override uid %d = %d for cid(%u)",
+                         __FUNCTION__, (int)request.slave_addr, (int)uid, (unsigned)reg_info.cid);
+            }
+            request.slave_addr = uid;
+        }
         mb_uid_info_t *addr_info = mbm_port_tcp_get_slave_info(mbm_controller_iface->mb_base->port_obj,
                                    request.slave_addr, MB_SOCK_STATE_CONNECTED);
         if (!addr_info) {
@@ -462,7 +475,7 @@ static esp_err_t mbc_tcp_master_set_parameter(void *ctx, uint16_t cid, uint8_t *
             return ESP_ERR_INVALID_STATE;
         }
         // Send request to write characteristic data
-        error = mbc_tcp_master_send_request(ctx, &request, data_ptr);
+        error = mbc_tcp_master_send_request_internal(ctx, &request, data_ptr, timeout_ms);
         if (error == ESP_OK) {
             ESP_LOGD(TAG, "%s: Good response for set cid(%u) = %s",
                      __FUNCTION__, (unsigned)reg_info.cid, (char *)esp_err_to_name(error));
@@ -482,62 +495,25 @@ static esp_err_t mbc_tcp_master_set_parameter(void *ctx, uint16_t cid, uint8_t *
 }
 
 // Set parameter value for characteristic selected by name and cid
+static esp_err_t mbc_tcp_master_set_parameter(void *ctx, uint16_t cid, uint8_t *value, uint8_t *type)
+{
+    return mbc_tcp_master_set_parameter_internal(ctx, cid, 0, false, value, type, 0);
+}
+
+static esp_err_t mbc_tcp_master_set_parameter_with_timeout(void *ctx, uint16_t cid, uint8_t *value, uint8_t *type, uint32_t timeout_ms)
+{
+    return mbc_tcp_master_set_parameter_internal(ctx, cid, 0, false, value, type, timeout_ms);
+}
+
+// Set parameter value for characteristic selected by name and cid
 static esp_err_t mbc_tcp_master_set_parameter_with(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type)
 {
-    MB_RETURN_ON_FALSE((value), ESP_ERR_INVALID_ARG, TAG, "value pointer is incorrect.");
-    MB_RETURN_ON_FALSE((type), ESP_ERR_INVALID_ARG, TAG, "type pointer is incorrect.");
-    mbm_controller_iface_t *mbm_controller_iface = MB_MASTER_GET_IFACE(ctx);
-    esp_err_t error = ESP_ERR_INVALID_RESPONSE;
-    mb_param_request_t request ;
-    mb_parameter_descriptor_t reg_info = { 0 };
-    uint8_t *data_ptr = NULL;
+    return mbc_tcp_master_set_parameter_internal(ctx, cid, uid, true, value, type, 0);
+}
 
-    error = mbc_tcp_master_set_request(ctx, cid, MB_PARAM_WRITE, &request, &reg_info);
-    if ((error == ESP_OK) && (cid == reg_info.cid)) {
-        // check that the requested uid is connected (call to port iface)
-        mb_uid_info_t *addr_info = mbm_port_tcp_get_slave_info(mbm_controller_iface->mb_base->port_obj,
-                                   uid, MB_SOCK_STATE_CONNECTED);
-        if (!addr_info) {
-            ESP_LOGW(TAG, "Try to send request for cid #%u with uid = %d, node is disconnected.",
-                     (unsigned)reg_info.cid, (int)request.slave_addr);
-        }
-        if (request.slave_addr != MB_SLAVE_ADDR_PLACEHOLDER) {
-            ESP_LOGD(TAG, "%s: override uid %d = %d for cid(%u)",
-                     __FUNCTION__, (int)request.slave_addr, (int)uid, (unsigned)reg_info.cid);
-        }
-        request.slave_addr = uid; // override the UID
-        MB_MASTER_ASSERT(xPortGetFreeHeapSize() > (reg_info.mb_size << 1));
-
-        data_ptr = calloc(1, (reg_info.mb_size << 1)); // alloc parameter buffer
-        if (!data_ptr) {
-            return ESP_ERR_INVALID_STATE;
-        }
-        // Transfer value of characteristic into parameter buffer
-        error = mbc_master_set_param_data((void *)data_ptr, (void *)value,
-                                          reg_info.param_type, reg_info.param_size);
-        if (error != ESP_OK) {
-            ESP_LOGE(TAG, "fail to set parameter data.");
-            free(data_ptr);
-            return ESP_ERR_INVALID_STATE;
-        }
-        // Send request to write characteristic data
-        error = mbc_tcp_master_send_request(ctx, &request, data_ptr);
-        if (error == ESP_OK) {
-            ESP_LOGD(TAG, "%s: Good response for set cid(%u) = %s",
-                     __FUNCTION__, (unsigned)reg_info.cid, (char *)esp_err_to_name(error));
-        } else {
-            ESP_LOGD(TAG, "%s: Bad response to set cid(%u) = %s",
-                     __FUNCTION__, (unsigned)reg_info.cid, (char *)esp_err_to_name(error));
-        }
-        free(data_ptr);
-        // Set the type of parameter found in the table
-        *type = reg_info.param_type;
-    } else {
-        ESP_LOGE(TAG, "%s: The requested cid(%u) not found in the data dictionary.",
-                 __FUNCTION__, (unsigned)reg_info.cid);
-        error = ESP_ERR_INVALID_ARG;
-    }
-    return error;
+static esp_err_t mbc_tcp_master_set_parameter_with_uid_timeout(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type, uint32_t timeout_ms)
+{
+    return mbc_tcp_master_set_parameter_internal(ctx, cid, uid, true, value, type, timeout_ms);
 }
 
 // Modbus controller delete function
@@ -617,10 +593,15 @@ esp_err_t mbc_tcp_master_controller_create(void **ctx)
     mbm_controller_iface->get_cid_info = mbc_tcp_master_get_cid_info;
     mbm_controller_iface->get_parameter = mbc_tcp_master_get_parameter;
     mbm_controller_iface->get_parameter_with = mbc_tcp_master_get_parameter_with;
+    mbm_controller_iface->get_parameter_tout = mbc_tcp_master_get_parameter_with_timeout;
+    mbm_controller_iface->get_parameter_with_tout = mbc_tcp_master_get_parameter_with_uid_timeout;
     mbm_controller_iface->send_request = mbc_tcp_master_send_request;
+    mbm_controller_iface->send_request_tout = mbc_tcp_master_send_request_with_timeout;
     mbm_controller_iface->set_descriptor = mbc_tcp_master_set_descriptor;
     mbm_controller_iface->set_parameter = mbc_tcp_master_set_parameter;
     mbm_controller_iface->set_parameter_with = mbc_tcp_master_set_parameter_with;
+    mbm_controller_iface->set_parameter_tout = mbc_tcp_master_set_parameter_with_timeout;
+    mbm_controller_iface->set_parameter_with_tout = mbc_tcp_master_set_parameter_with_uid_timeout;
 
     *ctx = mbm_controller_iface;
     return ESP_OK;

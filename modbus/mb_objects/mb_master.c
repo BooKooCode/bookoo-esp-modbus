@@ -39,6 +39,10 @@ typedef struct {
     uint8_t master_dst_addr;
     uint64_t curr_trans_id;
     handler_descriptor_t handler_descriptor;
+    // Pending custom handler for the current in-flight custom request.
+    // Protected by mbm_sema in the controller layer (one request at a time).
+    mb_fn_handler_fp pending_custom_handler;
+    uint8_t pending_func_code;
 } mbm_object_t;
 
 mb_err_enum_t mbm_tcp_create(mb_tcp_opts_t *tcp_opts, void **in_out_obj);
@@ -97,6 +101,55 @@ mb_err_enum_t mbm_get_handler_count(mb_base_t *inst, uint16_t *count)
     return MB_ENOERR;
 }
 
+mb_err_enum_t mbm_set_handler_range(mb_base_t *inst, uint8_t func_code,
+                                    uint16_t reg_start, uint16_t reg_len, mb_fn_handler_fp handler)
+{
+    mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
+    mb_err_enum_t status = MB_EILLSTATE;
+    SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
+        status = mb_set_handler_range(&mbm_obj->handler_descriptor, func_code, reg_start, reg_len, handler);
+    }
+    return status;
+}
+
+mb_err_enum_t mbm_get_handler_by_addr(mb_base_t *inst, uint8_t func_code,
+                                      uint16_t reg_addr, mb_fn_handler_fp *handler)
+{
+    mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
+    mb_err_enum_t status = MB_EILLSTATE;
+    if (handler) {
+        SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
+            status = mb_get_handler_by_addr(&mbm_obj->handler_descriptor, func_code, reg_addr, handler);
+        }
+    }
+    return status;
+}
+
+mb_err_enum_t mbm_delete_handler_range(mb_base_t *inst, uint8_t func_code,
+                                       uint16_t reg_start, uint16_t reg_len)
+{
+    mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
+    mb_err_enum_t status = MB_EILLSTATE;
+    SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
+        status = mb_delete_handler_range(&mbm_obj->handler_descriptor, func_code, reg_start, reg_len);
+    }
+    return status;
+}
+
+void mbm_set_pending_custom_handler(mb_base_t *inst, uint8_t func_code, mb_fn_handler_fp handler)
+{
+    mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
+    mbm_obj->pending_custom_handler = handler;
+    mbm_obj->pending_func_code = func_code;
+}
+
+void mbm_clear_pending_custom_handler(mb_base_t *inst)
+{
+    mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
+    mbm_obj->pending_custom_handler = NULL;
+    mbm_obj->pending_func_code = 0;
+}
+
 static mb_exception_t mbm_check_invoke_handler(mb_base_t *inst, uint8_t func_code, uint8_t *buf, uint16_t *len)
 {
     mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
@@ -106,6 +159,15 @@ static mb_exception_t mbm_check_invoke_handler(mb_base_t *inst, uint8_t func_cod
     }
     if (func_code & MB_FUNC_ERROR) {
         exception = (mb_exception_t)buf[MB_PDU_DATA_OFF];
+        return exception;
+    }
+    // If a range-matched custom handler was selected during request dispatch, use it first.
+    // This allows per-range response processing for custom commands.
+    if (mbm_obj->pending_custom_handler && mbm_obj->pending_func_code == func_code) {
+        mb_fn_handler_fp handler = mbm_obj->pending_custom_handler;
+        mbm_obj->pending_custom_handler = NULL;
+        mbm_obj->pending_func_code = 0;
+        exception = handler(inst, buf, len);
         return exception;
     }
     SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {

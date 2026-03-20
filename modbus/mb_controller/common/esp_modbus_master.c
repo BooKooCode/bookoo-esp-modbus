@@ -82,14 +82,19 @@ esp_err_t mbc_master_get_cid_info(void *ctx, uint16_t cid, const mb_parameter_de
  */
 esp_err_t mbc_master_set_parameter(void *ctx, uint16_t cid, uint8_t *value, uint8_t *type)
 {
+    return mbc_master_set_parameter_with_timeout(ctx, cid, value, type, 0);
+}
+
+esp_err_t mbc_master_set_parameter_with_timeout(void *ctx, uint16_t cid, uint8_t *value, uint8_t *type, uint32_t timeout_ms)
+{
     esp_err_t error = ESP_OK;
     MB_RETURN_ON_FALSE(ctx, ESP_ERR_INVALID_STATE, TAG,
                        "Master interface is not correctly initialized.");
     mbm_controller_iface_t *mbm_controller = MB_MASTER_GET_IFACE(ctx);
-    MB_RETURN_ON_FALSE((mbm_controller->set_parameter && mbm_controller->is_active),
+    MB_RETURN_ON_FALSE((mbm_controller->set_parameter_tout && mbm_controller->is_active),
                        ESP_ERR_INVALID_STATE, TAG,
                        "Master interface is not correctly initialized.");
-    error = mbm_controller->set_parameter(ctx, cid, value, type);
+    error = mbm_controller->set_parameter_tout(ctx, cid, value, type, timeout_ms);
     MB_RETURN_ON_FALSE((error == ESP_OK), error, TAG,
                        "Master set parameter failure, error=(0x%x) (%s).",
                        (uint16_t)error, esp_err_to_name(error));
@@ -101,14 +106,19 @@ esp_err_t mbc_master_set_parameter(void *ctx, uint16_t cid, uint8_t *value, uint
  */
 esp_err_t mbc_master_set_parameter_with(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type)
 {
+    return mbc_master_set_parameter_with_uid_timeout(ctx, cid, uid, value, type, 0);
+}
+
+esp_err_t mbc_master_set_parameter_with_uid_timeout(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type, uint32_t timeout_ms)
+{
     esp_err_t error = ESP_OK;
     MB_RETURN_ON_FALSE(ctx, ESP_ERR_INVALID_STATE, TAG,
                        "Master interface is not correctly initialized.");
     mbm_controller_iface_t *mbm_controller = MB_MASTER_GET_IFACE(ctx);
-    MB_RETURN_ON_FALSE((mbm_controller->set_parameter_with && mbm_controller->is_active),
+    MB_RETURN_ON_FALSE((mbm_controller->set_parameter_with_tout && mbm_controller->is_active),
                        ESP_ERR_INVALID_STATE, TAG,
                        "Master interface is not correctly initialized.");
-    error = mbm_controller->set_parameter_with(ctx, cid, uid, value, type);
+    error = mbm_controller->set_parameter_with_tout(ctx, cid, uid, value, type, timeout_ms);
     MB_RETURN_ON_FALSE((error == ESP_OK), error, TAG,
                        "Master set parameter failure, error=(0x%x) (%s).",
                        (uint16_t)error, esp_err_to_name(error));
@@ -120,14 +130,19 @@ esp_err_t mbc_master_set_parameter_with(void *ctx, uint16_t cid, uint8_t uid, ui
  */
 esp_err_t mbc_master_get_parameter(void *ctx, uint16_t cid, uint8_t *value, uint8_t *type)
 {
+    return mbc_master_get_parameter_with_timeout(ctx, cid, value, type, 0);
+}
+
+esp_err_t mbc_master_get_parameter_with_timeout(void *ctx, uint16_t cid, uint8_t *value, uint8_t *type, uint32_t timeout_ms)
+{
     esp_err_t error = ESP_OK;
     MB_RETURN_ON_FALSE(ctx, ESP_ERR_INVALID_STATE, TAG,
                        "Master interface is not correctly initialized.");
     mbm_controller_iface_t *mbm_controller = MB_MASTER_GET_IFACE(ctx);
-    MB_RETURN_ON_FALSE((mbm_controller->get_parameter && mbm_controller->is_active),
+    MB_RETURN_ON_FALSE((mbm_controller->get_parameter_tout && mbm_controller->is_active),
                        ESP_ERR_INVALID_STATE, TAG,
                        "Master interface is not correctly configured.");
-    error = mbm_controller->get_parameter(ctx, cid, value, type);
+    error = mbm_controller->get_parameter_tout(ctx, cid, value, type, timeout_ms);
     MB_RETURN_ON_FALSE((error == ESP_OK), error, TAG,
                        "Master get parameter failure, error=(0x%x) (%s).",
                        (uint16_t)error, esp_err_to_name(error));
@@ -139,14 +154,19 @@ esp_err_t mbc_master_get_parameter(void *ctx, uint16_t cid, uint8_t *value, uint
  */
 esp_err_t mbc_master_get_parameter_with(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type)
 {
+    return mbc_master_get_parameter_with_uid_timeout(ctx, cid, uid, value, type, 0);
+}
+
+esp_err_t mbc_master_get_parameter_with_uid_timeout(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type, uint32_t timeout_ms)
+{
     esp_err_t error = ESP_OK;
     MB_RETURN_ON_FALSE(ctx, ESP_ERR_INVALID_STATE, TAG,
                        "Master interface is not correctly initialized.");
     mbm_controller_iface_t *mbm_controller = MB_MASTER_GET_IFACE(ctx);
-    MB_RETURN_ON_FALSE((mbm_controller->get_parameter_with && mbm_controller->is_active),
+    MB_RETURN_ON_FALSE((mbm_controller->get_parameter_with_tout && mbm_controller->is_active),
                        ESP_ERR_INVALID_STATE, TAG,
                        "Master interface is not correctly configured.");
-    error = mbm_controller->get_parameter_with(ctx, cid, uid, value, type);
+    error = mbm_controller->get_parameter_with_tout(ctx, cid, uid, value, type, timeout_ms);
     MB_RETURN_ON_FALSE((error == ESP_OK), error, TAG,
                        "Master get parameter failure, error=(0x%x) (%s).",
                        (uint16_t)error, esp_err_to_name(error));
@@ -158,14 +178,19 @@ esp_err_t mbc_master_get_parameter_with(void *ctx, uint16_t cid, uint8_t uid, ui
  */
 esp_err_t mbc_master_send_request(void *ctx, mb_param_request_t *request, void *data_ptr)
 {
+    return mbc_master_send_request_with_timeout(ctx, request, data_ptr, 0);
+}
+
+esp_err_t mbc_master_send_request_with_timeout(void *ctx, mb_param_request_t *request, void *data_ptr, uint32_t timeout_ms)
+{
     esp_err_t error = ESP_OK;
     MB_RETURN_ON_FALSE(ctx, ESP_ERR_INVALID_STATE, TAG,
                        "Master interface is not correctly initialized.");
     mbm_controller_iface_t *mbm_controller = MB_MASTER_GET_IFACE(ctx);
-    MB_RETURN_ON_FALSE((mbm_controller->send_request && mbm_controller->is_active),
+    MB_RETURN_ON_FALSE((mbm_controller->send_request_tout && mbm_controller->is_active),
                        ESP_ERR_INVALID_STATE, TAG,
                        "Master interface is not correctly configured.");
-    error = mbm_controller->send_request(ctx, request, data_ptr);
+    error = mbm_controller->send_request_tout(ctx, request, data_ptr, timeout_ms);
     MB_RETURN_ON_FALSE((error == ESP_OK), error, TAG,
                        "Master send request failure error=(0x%x) (%s).",
                        (uint16_t)error, esp_err_to_name(error));

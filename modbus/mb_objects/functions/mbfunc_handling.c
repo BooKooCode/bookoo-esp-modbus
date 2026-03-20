@@ -107,3 +107,114 @@ mb_err_enum_t mb_delete_command_handlers(handler_descriptor_t *descriptor)
     }
     return MB_ENOERR;
 }
+
+// Register handler with register range restriction.
+// reg_len == 0 means wildcard (matches any reg_addr), same semantics as mb_set_handler.
+mb_err_enum_t mb_set_handler_range(handler_descriptor_t *descriptor, uint8_t func_code,
+                                   uint16_t reg_start, uint16_t reg_len, mb_fn_handler_fp handler)
+{
+    MB_RETURN_ON_FALSE((descriptor && handler && descriptor->instance), MB_EINVAL, TAG, "invalid arguments.");
+    MB_RETURN_ON_FALSE(MB_IS_VALID_FUNC_CODE(func_code), MB_EINVAL, TAG,
+                       "invalid function code (0x%x)", (int)func_code);
+
+    mb_command_entry_t *item_ptr = NULL;
+    LIST_FOREACH(item_ptr, &descriptor->head, entries) {
+        if (item_ptr && item_ptr->func_code == func_code
+                && item_ptr->reg_start == reg_start && item_ptr->reg_len == reg_len) {
+            item_ptr->handler = handler;
+            ESP_LOGD(TAG, "Inst: %p, update range handler: fc=0x%x [%u+%u], %p",
+                     descriptor->instance, func_code, reg_start, reg_len, handler);
+            return MB_ENOERR;
+        }
+    }
+
+    if (descriptor->count >= MB_FUNC_HANDLERS_MAX) {
+        return MB_ENORES;
+    }
+    descriptor->count += 1;
+    item_ptr = (mb_command_entry_t *)heap_caps_malloc(sizeof(mb_command_entry_t),
+               MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    MB_RETURN_ON_FALSE(item_ptr, MB_ENORES, TAG, "no mem for range handler fc=0x%x.", func_code);
+    item_ptr->func_code = func_code;
+    item_ptr->handler = handler;
+    item_ptr->reg_start = reg_start;
+    item_ptr->reg_len = reg_len;
+    LIST_INSERT_HEAD(&descriptor->head, item_ptr, entries);
+    ESP_LOGD(TAG, "Inst: %p, add range handler: fc=0x%x [%u+%u], %p",
+             descriptor->instance, func_code, reg_start, reg_len, handler);
+    return MB_ENOERR;
+}
+
+// Range-aware handler lookup. Entries with a matching range take priority over
+// wildcard entries (reg_len == 0). Returns MB_ENORES when nothing matches.
+mb_err_enum_t mb_get_handler_by_addr(handler_descriptor_t *descriptor, uint8_t func_code,
+                                     uint16_t reg_addr, mb_fn_handler_fp *handler)
+{
+    MB_RETURN_ON_FALSE((descriptor && handler && descriptor->instance), MB_EINVAL, TAG, "invalid arguments.");
+    MB_RETURN_ON_FALSE(MB_IS_VALID_FUNC_CODE(func_code), MB_EINVAL, TAG,
+                       "invalid function code (0x%x)", (int)func_code);
+
+    *handler = NULL;
+    mb_fn_handler_fp best_handler = NULL;
+    bool found_range = false;
+
+    mb_command_entry_t *item_ptr = NULL;
+    LIST_FOREACH(item_ptr, &descriptor->head, entries) {
+        if (!item_ptr || item_ptr->func_code != func_code) {
+            continue;
+        }
+        if (item_ptr->reg_len > 0) {
+            // Range-restricted entry: check if reg_addr falls within [reg_start, reg_start+reg_len)
+            if (reg_addr >= item_ptr->reg_start
+                    && reg_addr < (uint32_t)(item_ptr->reg_start + item_ptr->reg_len)) {
+                best_handler = item_ptr->handler;
+                found_range = true;
+                // Keep scanning — later entries may be more specific (narrower ranges),
+                // but current design takes first range match. Continue to find more specific one
+                // is possible but adds complexity; first match is sufficient for typical use.
+                break;
+            }
+        } else if (!found_range) {
+            // Wildcard entry (reg_len == 0) — use only if no range match found yet
+            best_handler = item_ptr->handler;
+        }
+    }
+
+    if (best_handler) {
+        *handler = best_handler;
+        ESP_LOGD(TAG, "Inst: %p, found handler for fc=0x%x reg=%u: %p",
+                 descriptor->instance, func_code, reg_addr, best_handler);
+        return MB_ENOERR;
+    }
+    return MB_ENORES;
+}
+
+// Delete a range-specific handler entry identified by (func_code, reg_start, reg_len).
+mb_err_enum_t mb_delete_handler_range(handler_descriptor_t *descriptor, uint8_t func_code,
+                                      uint16_t reg_start, uint16_t reg_len)
+{
+    MB_RETURN_ON_FALSE((descriptor && descriptor->instance), MB_EINVAL, TAG, "invalid arguments.");
+    MB_RETURN_ON_FALSE(MB_IS_VALID_FUNC_CODE(func_code), MB_EINVAL, TAG,
+                       "invalid function code (0x%x)", (int)func_code);
+
+    if (LIST_EMPTY(&descriptor->head)) {
+        return MB_EINVAL;
+    }
+
+    mb_command_entry_t *item_ptr = NULL;
+    mb_command_entry_t *ptemp = NULL;
+    LIST_FOREACH_SAFE(item_ptr, &descriptor->head, entries, ptemp) {
+        if (item_ptr && item_ptr->func_code == func_code
+                && item_ptr->reg_start == reg_start && item_ptr->reg_len == reg_len) {
+            ESP_LOGD(TAG, "Inst: %p, remove range handler: fc=0x%x [%u+%u], %p",
+                     descriptor->instance, func_code, reg_start, reg_len, item_ptr->handler);
+            LIST_REMOVE(item_ptr, entries);
+            free(item_ptr);
+            if (descriptor->count) {
+                descriptor->count--;
+            }
+            return MB_ENOERR;
+        }
+    }
+    return MB_ENORES;
+}

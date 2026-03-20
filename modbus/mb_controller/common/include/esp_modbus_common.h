@@ -263,6 +263,46 @@ esp_err_t mbc_delete_handler(void *ctx, uint8_t func_code);
 */
 esp_err_t mbc_get_handler_count(void *ctx, uint16_t *count);
 
+/**
+ * @brief Register a handler for master requests matching func_code AND a register address range.
+ *        When a request's reg_start falls inside [reg_start, reg_start + reg_len), this handler
+ *        is dispatched instead of any wildcard (func_code-only) handler registered for the same
+ *        func_code. Setting reg_len == 0 gives the same behaviour as mbc_set_handler().
+ *        Only supported in master mode.
+ *
+ * @param[in] ctx    context pointer to the master controller object
+ * @param[in] func_code  Modbus function code (1-127)
+ * @param[in] reg_start  First register address of the range (inclusive)
+ * @param[in] reg_len    Number of registers in the range (0 = wildcard / no restriction)
+ * @param[in] handler    Function pointer to the handler
+ *
+ * @return
+ *     - esp_err_t ESP_OK               - handler registered successfully
+ *     - esp_err_t ESP_ERR_INVALID_ARG  - invalid argument
+ *     - esp_err_t ESP_ERR_INVALID_STATE - controller not correctly initialized
+ *     - esp_err_t ESP_ERR_NOT_SUPPORTED - called on a slave controller
+ */
+esp_err_t mbc_register_handler_range(void *ctx, uint8_t func_code, uint16_t reg_start,
+                                     uint16_t reg_len, mb_fn_handler_fp handler);
+
+/**
+ * @brief Unregister a range-specific handler identified by (func_code, reg_start, reg_len).
+ *        Only supported in master mode.
+ *
+ * @param[in] ctx       context pointer to the master controller object
+ * @param[in] func_code Modbus function code (1-127)
+ * @param[in] reg_start First register address of the range that was registered
+ * @param[in] reg_len   Number of registers in the range that was registered
+ *
+ * @return
+ *     - esp_err_t ESP_OK               - handler unregistered successfully
+ *     - esp_err_t ESP_ERR_INVALID_ARG  - invalid argument
+ *     - esp_err_t ESP_ERR_INVALID_STATE - controller not correctly initialized or handler not found
+ *     - esp_err_t ESP_ERR_NOT_SUPPORTED - called on a slave controller
+ */
+esp_err_t mbc_unregister_handler_range(void *ctx, uint8_t func_code, uint16_t reg_start,
+                                       uint16_t reg_len);
+
 #ifdef __cplusplus
 }
 #endif
