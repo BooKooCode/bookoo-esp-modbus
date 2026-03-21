@@ -57,21 +57,17 @@ mb_err_enum_t mbm_delete_handler(mb_base_t *inst, uint8_t func_code);
 // The helper function to get count of handlers for master
 mb_err_enum_t mbm_get_handler_count(mb_base_t *inst, uint16_t *count);
 
-// Register handler with register-address range restriction (reg_len==0 means wildcard)
-mb_err_enum_t mbm_set_handler_range(mb_base_t *inst, uint8_t func_code,
-                                    uint16_t reg_start, uint16_t reg_len, mb_fn_handler_fp handler);
+// Independent wrap-router API for master-only func_code + register-range routing.
+mb_err_enum_t mbm_router_register_range(mb_base_t *inst, uint8_t func_code,
+                                        uint16_t reg_start, uint16_t reg_len, mb_fn_handler_fp handler);
+mb_err_enum_t mbm_router_unregister_range(mb_base_t *inst, uint8_t func_code,
+                                          uint16_t reg_start, uint16_t reg_len);
+mb_err_enum_t mbm_router_select_on_request(mb_base_t *inst, uint8_t func_code,
+                                           uint16_t reg_addr, mb_fn_handler_fp *selected_handler);
 
-// Range-aware handler lookup: range-restricted entries take priority over wildcard entries
-mb_err_enum_t mbm_get_handler_by_addr(mb_base_t *inst, uint8_t func_code,
-                                      uint16_t reg_addr, mb_fn_handler_fp *handler);
-
-// Delete a range-specific handler entry identified by (func_code, reg_start, reg_len)
-mb_err_enum_t mbm_delete_handler_range(mb_base_t *inst, uint8_t func_code,
-                                       uint16_t reg_start, uint16_t reg_len);
-
-// Store/clear the handler that should process the response for the current in-flight custom request
-void mbm_set_pending_custom_handler(mb_base_t *inst, uint8_t func_code, mb_fn_handler_fp handler);
-void mbm_clear_pending_custom_handler(mb_base_t *inst);
+// Store/clear the handler that should process the response for the current in-flight request.
+void mbm_router_set_pending_target(mb_base_t *inst, uint8_t func_code, mb_fn_handler_fp handler);
+void mbm_router_clear_pending_target(mb_base_t *inst);
 
 #ifdef __cplusplus
 }

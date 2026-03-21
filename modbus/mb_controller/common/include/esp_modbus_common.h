@@ -265,20 +265,20 @@ esp_err_t mbc_get_handler_count(void *ctx, uint16_t *count);
 
 /**
  * @brief Register a handler for master requests matching func_code AND a register address range.
- *        When a request's reg_start falls inside [reg_start, reg_start + reg_len), this handler
- *        is dispatched instead of any wildcard (func_code-only) handler registered for the same
- *        func_code. Setting reg_len == 0 gives the same behaviour as mbc_set_handler().
- *        Only supported in master mode.
+ *        The range route is evaluated on request dispatch. Responses are forwarded by an internal
+ *        dispatcher installed automatically for the func_code on first registration. The default
+ *        fallback handler remains the one configured through mbc_set_handler(). Only supported in
+ *        master mode.
  *
  * @param[in] ctx    context pointer to the master controller object
  * @param[in] func_code  Modbus function code (1-127)
  * @param[in] reg_start  First register address of the range (inclusive)
- * @param[in] reg_len    Number of registers in the range (0 = wildcard / no restriction)
+ * @param[in] reg_len    Number of registers in the range (> 0)
  * @param[in] handler    Function pointer to the handler
  *
  * @return
  *     - esp_err_t ESP_OK               - handler registered successfully
- *     - esp_err_t ESP_ERR_INVALID_ARG  - invalid argument
+ *     - esp_err_t ESP_ERR_INVALID_ARG  - invalid argument or overlapping range
  *     - esp_err_t ESP_ERR_INVALID_STATE - controller not correctly initialized
  *     - esp_err_t ESP_ERR_NOT_SUPPORTED - called on a slave controller
  */

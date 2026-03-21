@@ -7,7 +7,7 @@
 #include "mbc_master.h"         // for master interface define
 #include "mbc_slave.h"          // for slave interface define
 #include "esp_modbus_common.h"  // for public interface defines
-#include "mb_master.h"          // for mbm_set_handler_range, mbm_delete_handler_range
+#include "mb_master.h"          // for wrap router registration helpers
 
 static const char TAG[] __attribute__((unused)) = "MB_CONTROLLER_COMMON";
 
@@ -99,13 +99,15 @@ esp_err_t mbc_register_handler_range(void *ctx, uint8_t func_code, uint16_t reg_
 {
     MB_RETURN_ON_FALSE((ctx && handler && func_code), ESP_ERR_INVALID_STATE, TAG,
                        "Incorrect arguments for the function.");
+    MB_RETURN_ON_FALSE((reg_len > 0), ESP_ERR_INVALID_ARG, TAG,
+                       "Range registration requires reg_len > 0.");
     mb_controller_common_t *mb_controller = (mb_controller_common_t *)(ctx);
     mb_base_t *mb_obj = (mb_base_t *)mb_controller->mb_base;
     MB_RETURN_ON_FALSE(mb_obj, ESP_ERR_INVALID_STATE, TAG,
                        "Controller interface is not correctly initialized.");
     MB_RETURN_ON_FALSE(mb_obj->descr.is_master, ESP_ERR_NOT_SUPPORTED, TAG,
                        "Range handler registration is only supported for master mode.");
-    mb_err_enum_t ret = mbm_set_handler_range(mb_controller->mb_base, func_code,
+    mb_err_enum_t ret = mbm_router_register_range(mb_controller->mb_base, func_code,
                         reg_start, reg_len, handler);
     return MB_ERR_TO_ESP_ERR(ret);
 }
@@ -124,7 +126,7 @@ esp_err_t mbc_unregister_handler_range(void *ctx, uint8_t func_code, uint16_t re
                        "Controller interface is not correctly initialized.");
     MB_RETURN_ON_FALSE(mb_obj->descr.is_master, ESP_ERR_NOT_SUPPORTED, TAG,
                        "Range handler unregistration is only supported for master mode.");
-    mb_err_enum_t ret = mbm_delete_handler_range(mb_controller->mb_base, func_code,
+    mb_err_enum_t ret = mbm_router_unregister_range(mb_controller->mb_base, func_code,
                         reg_start, reg_len);
     return MB_ERR_TO_ESP_ERR(ret);
 }

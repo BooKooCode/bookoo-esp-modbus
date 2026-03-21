@@ -657,9 +657,9 @@ static esp_err_t master_init(void)
                        "could not register range1 handler, returned (0x%x).", (int)err);
     mb_fn_handler_fp handler = NULL;
     err = mbc_get_handler(master_handle, override_command, &handler);
-    MB_RETURN_ON_FALSE((err == ESP_OK && handler == my_custom_handler), ESP_ERR_INVALID_STATE, TAG,
+    MB_RETURN_ON_FALSE((err == ESP_OK && handler != NULL), ESP_ERR_INVALID_STATE, TAG,
                        "could not get handler for command %d, returned (0x%x).", (int)override_command, (int)err);
-    ESP_LOGI(TAG, "Registered custom handlers: fallback + ranges [%u,%u) and [%u,%u).",
+    ESP_LOGI(TAG, "Registered custom handlers: dispatcher + fallback + ranges [%u,%u) and [%u,%u).",
              MB_CUST_ROUTE_RANGE0_START, MB_CUST_ROUTE_RANGE0_START + MB_CUST_ROUTE_RANGE0_LEN,
              MB_CUST_ROUTE_RANGE1_START, MB_CUST_ROUTE_RANGE1_START + MB_CUST_ROUTE_RANGE1_LEN);
 

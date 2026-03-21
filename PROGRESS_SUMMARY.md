@@ -1,326 +1,162 @@
 # ESP-Modbus 改动实现进度总结
 
-**更新时间**: 2026-03-21 (编译验证通过)
+**更新时间**: 2026-03-21
 **项目**: Fork esp-modbus 作为 ESP32S3 子项目的主机接口
-**当前状态**: 已完成超时接口扩展、范围路由核心接入、编译验证，尚未完成功能测试和文档收口
+**当前状态**: 超时接口扩展和 wrap 范围路由器改造已完成，代码已通过编译验证，当前进入运行验证前的收口阶段。
 
 ---
 
-## 需求目标
+## 1. 本轮结论
 
-### 核心需求
-1. 独立超时参数
-   目标是让主站请求支持单次调用超时，不指定时回退到控制器默认超时。
-2. 功能码 + 寄存器范围路由
-   目标是把自定义 handler 的匹配从 `func_code -> handler` 扩展为 `func_code + [reg_start, reg_len) -> handler`。
-3. 更低时间复杂度
-   目标是后续把路由匹配优化到 O(log n) 或更优，并预留优先级扩展空间。
+当前仓库的真实状态如下：
 
-### 已确认约束
-- 同步阻塞模式，没有异步需求
-- 超时语义为调用线程阻塞直到响应返回或超时
-- 旧的 `mbc_set_handler()` 必须继续可用
+1. 主站单次调用超时接口已经打通。
+2. 侵入式范围路由实现已经回退。
+3. 新的 wrap 路由器已经接入 master 请求/响应链路。
+4. 公开范围注册接口已经切换到新路由器后端。
+5. serial master 示例已同步到 dispatcher + fallback + ranges 语义。
+6. 代码已完成 ESP-IDF 编译验证，但尚未在实际工程中做运行测试。
 
 ---
 
-## 当前实际进展
+## 2. 已完成项
 
-### 已完成
+### 2.1 独立超时参数链路
 
-#### 1. 主站超时接口已扩展完成
-
-已经补齐公开 API、公共分发层和 serial/tcp 主站实现，使以下接口可用：
-
-- `mbc_master_send_request_with_timeout()`
-- `mbc_master_get_parameter_with_timeout()`
-- `mbc_master_get_parameter_with_uid_timeout()`
-- `mbc_master_set_parameter_with_timeout()`
-- `mbc_master_set_parameter_with_uid_timeout()`
-
-当前实现方式不是在 `mb_param_request_t` 内增加 `timeout_ms` 字段，而是通过新的 `*_with_timeout()` 接口把超时参数显式传入调用链。
-
-对应改动：
-
-- `modbus/mb_controller/common/include/esp_modbus_master.h`
-- `modbus/mb_controller/common/esp_modbus_master.c`
-- `modbus/mb_controller/common/mbc_master.h`
-- `modbus/mb_controller/serial/mbc_serial_master.c`
-- `modbus/mb_controller/tcp/mbc_tcp_master.c`
-
-已实现的内部行为：
-
-- 若调用方传入 `timeout_ms != 0`，则优先使用该值
-- 若传入 `timeout_ms == 0`，则回退到 serial/tcp 配置中的 `response_tout_ms`
-- 若配置值也为 0，则继续回退到 `MB_MASTER_TIMEOUT_MS_RESPOND`
-- controller 层信号量等待超时和底层响应定时器都已经切换为使用这个有效超时值
-
-#### 2. 范围路由核心能力已接入完成
-
-当前没有采用此前总结里提到的独立路由表文件方案，而是直接复用了现有 handler 链表结构，在原有 handler 节点上扩展范围字段：
-
-- `reg_start`
-- `reg_len`
-
-并新增了范围相关内部能力：
-
-- `mb_set_handler_range()`
-- `mb_get_handler_by_addr()`
-- `mb_delete_handler_range()`
-- `mbm_set_handler_range()`
-- `mbm_get_handler_by_addr()`
-- `mbm_delete_handler_range()`
-
-对应改动：
-
-- `modbus/mb_objects/include/mb_common.h`
-- `modbus/mb_objects/functions/mbfunc_handling.c`
-- `modbus/mb_objects/include/mb_master.h`
-- `modbus/mb_objects/mb_master.c`
-
-当前匹配规则：
+已完成 `*_with_timeout()` 调用链扩展，当前有效接口包括：
 
 ```c
-if (entry->func_code != func_code) {
-    continue;
-}
-
-if (entry->reg_len > 0) {
-    if (reg_addr >= entry->reg_start && reg_addr < entry->reg_start + entry->reg_len) {
-        return entry->handler;
-    }
-} else {
-    wildcard_handler = entry->handler;
-}
+mbc_master_send_request_with_timeout()
+mbc_master_get_parameter_with_timeout()
+mbc_master_get_parameter_with_uid_timeout()
+mbc_master_set_parameter_with_timeout()
+mbc_master_set_parameter_with_uid_timeout()
 ```
 
-含义是：
-
-- 范围匹配优先于通配 handler
-- `reg_len == 0` 表示无范围限制，兼容旧 API 语义
-- 当前仍为线性扫描，时间复杂度是 O(n)
-
-#### 3. 自定义请求派发已经切换到范围路由
-
-在 serial/tcp master 的自定义功能码请求分支中，原来使用 `mbm_get_handler()` 按功能码取 handler，现在已改为：
-
-1. 用 `mbm_get_handler_by_addr(func_code, reg_start)` 查找范围 handler
-2. 把命中的 handler 暂存为当前飞行中的 pending custom handler
-3. 发出自定义请求
-4. 响应回来时优先调用 pending handler
-5. 请求结束后清理 pending handler
-
-对应改动：
-
-- `modbus/mb_controller/serial/mbc_serial_master.c`
-- `modbus/mb_controller/tcp/mbc_tcp_master.c`
-- `modbus/mb_objects/mb_master.c`
-
-这个设计适用于当前的同步串行请求模型，因为 controller 层一次只允许一个请求持有信号量。
-
-#### 4. 公开范围注册 API 已补齐
-
-已经新增公开接口：
-
-- `mbc_register_handler_range()`
-- `mbc_unregister_handler_range()`
-
-对应改动：
-
-- `modbus/mb_controller/common/include/esp_modbus_common.h`
-- `modbus/mb_controller/common/esp_modbus_common.c`
-
-兼容性现状：
-
-- 旧接口 `mbc_set_handler()` 仍然保留可用
-- 新接口仅支持 master 模式，slave 模式会返回 `ESP_ERR_NOT_SUPPORTED`
-- 旧接口可以看作“无范围限制”的 fallback handler
-
-#### 5. 示例代码已经开始接入超时接口和范围路由示例
-
-示例文件中已经做了两个层面的接入：
-
-- 部分调用切换为超时版本
-- 增加了最小范围 handler 示例，使用同一个自定义功能码 `0x41` 按不同 `reg_start` 路由到不同 handler
-
-当前示例会注册：
-
-- 一个 fallback handler：`mbc_set_handler()`
-- 两个范围 handler：`mbc_register_handler_range(..., reg_start=0, reg_len=1, ...)` 和 `mbc_register_handler_range(..., reg_start=10, reg_len=1, ...)`
-
-并发送两次自定义请求：
-
-- `reg_start = 0`，命中 `range0` handler
-- `reg_start = 10`，命中 `range1` handler
-
-这样可以最小化验证“旧 API 兼容存在，同时新 API 优先按范围路由”的行为。
-
-已切换或新增的示例点包括：
-
-- `mbc_master_get_parameter_with_timeout()`
-- `mbc_master_set_parameter_with_timeout()`
-- `mbc_master_send_request_with_timeout()`
-- `mbc_register_handler_range()`
-
-对应文件：
-
-- `examples/serial/mb_serial_master/main/serial_master.c`
-
-这部分现在同时覆盖了单次调用超时和最小范围路由示例。
-
----
-
-## 已定位信息
-
-### 关键头文件位置
-
-- `mbcontroller.h` 实际位置：
-  `modbus/mb_controller/common/include/mbcontroller.h`
-
-### 本次实际涉及的关键实现文件
-
-- `modbus/mb_controller/common/include/esp_modbus_master.h`
-- `modbus/mb_controller/common/include/esp_modbus_common.h`
-- `modbus/mb_controller/common/esp_modbus_master.c`
-- `modbus/mb_controller/common/esp_modbus_common.c`
-- `modbus/mb_controller/common/mbc_master.h`
-- `modbus/mb_controller/serial/mbc_serial_master.c`
-- `modbus/mb_controller/tcp/mbc_tcp_master.c`
-- `modbus/mb_objects/include/mb_common.h`
-- `modbus/mb_objects/include/mb_master.h`
-- `modbus/mb_objects/functions/mbfunc_handling.c`
-- `modbus/mb_objects/mb_master.c`
-- `examples/serial/mb_serial_master/main/serial_master.c`
-
----
-
-## 当前未完成项
-
-### 1. 与最初方案仍有偏差的点
-
-以下目标尚未按最初设想落地：
-
-- `mb_param_request_t` 还没有新增 `timeout_ms` 字段
-- 尚未提供 `mbc_set_default_timeout()` 这类新的全局默认超时设置 API
-- 没有单独创建 `mb_handler_route.h/.c` 路由表文件
-- 没有实现优先级字段
-- 没有实现 O(log n) 查询，当前仍是 O(n)
-
-也就是说，目前代码已经具备“超时接口”和“按范围分派 handler”的能力，但实现路径与最早草案不同。
-
-### 2. 验证工作进展
-
-已完成：
-- ✅ CMake/ESP-IDF 编译验证 (serial_master.c 编译通过，接口调用无误)
-- ✅ 链接验证 (全部新/改接口链接成功)
-
-仍未完成或仍需验证：
-- 范围 handler 功能测试 (需要在开发板或模拟环境运行示例)
-- 超时行为测试
-- 回归测试
-
-目前可以确认源码层面的改动已经落地且编译无错，下一阶段需要完成运行时功能验证。
-
-### 3. 示例和文档仍需补充
-
-尚未完成：
-
-- 在示例中展示旧 API 和新 API 的兼容关系
-- 在 README 或接口说明中补充新接口说明
-
----
-
-## 状态评估
-
-### 按能力划分
-
-- 独立超时接口支持：已完成
-- 范围路由核心接入：已完成
-- 公开范围注册接口：已完成
-- 示例超时调用改造：已完成
-- 示例范围路由演示：已完成
-- 编译验证：✅ 已完成 (serial_master.c 编译通过)
-- 测试验证：未完成
-- 性能优化到 O(log n)：未完成
-
-### 按阶段重估
-
-如果按当前真实状态重新划分：
-
-1. 接口扩展与 controller 串联：已完成
-2. 范围路由核心接入：已完成
-3. 示例接入：已完成
-4. 编译验证：✅ 已完成
-5. 功能与性能测试：未完成
-6. 性能优化与补充 API：未完成
-
-### 总体进度
-
-按当前落地代码估算：**约 75% - 80%**
-
-更新说明：
-
-- 核心功能代码已完成并通过编译验证
-- serial_master.c 同时包含超时接口和范围路由示例代码，编译通过
-- 已验证：接口调用无编译错误、链接成功
-- 尚未完成：运行时功能验证、超时行为测试、范围路由功能测试
-
-因此当前建议对外表述为：**功能代码开发完成并编译通过，功能验证阶段进行中**。
-
----
-
-## 当前关键实现说明
-
-### 超时选择逻辑
+当前超时选择逻辑为：
 
 ```c
 effective_timeout_ms = timeout_ms ? timeout_ms : response_tout_ms;
 if (!effective_timeout_ms) {
-    effective_timeout_ms = MB_MASTER_TIMEOUT_MS_RESPOND;
+   effective_timeout_ms = MB_MASTER_TIMEOUT_MS_RESPOND;
 }
 ```
 
-### 范围路由语义
+### 2.2 wrap 范围路由器
+
+当前已经完成以下改造：
+
+1. 旧 handler 表恢复为纯功能码入口语义。
+2. 范围路由改为独立 router bucket + subroute 模型。
+3. 首次注册范围子路由时自动安装 dispatcher。
+4. 请求阶段匹配范围子路由，响应阶段仅转发到 pending target 或 default fallback。
+5. 范围重叠注册被拒绝。
+6. 范围接口当前仅支持 Master。
+
+核心内部接口已经落地：
 
 ```c
-匹配条件 = function code 相同
-        && (reg_len == 0
-            || reg_start <= request.reg_start < reg_start + reg_len)
+mbm_router_register_range()
+mbm_router_unregister_range()
+mbm_router_select_on_request()
+mbm_router_set_pending_target()
+mbm_router_clear_pending_target()
+mbm_fn_router_dispatcher()
 ```
 
-### 向后兼容语义
+### 2.3 兼容性边界
 
-```c
-mbc_set_handler(ctx, func_code, handler)
-```
+当前兼容性边界已经明确：
 
-仍然有效，可视为：
+1. `mbc_set_handler()` 仍作为默认 fallback handler 的注册入口。
+2. `mbc_get_handler()` 在 wrap 已启用时返回 dispatcher，而不是原始 fallback handler。
+3. `mbc_delete_handler()` 在 wrap 已启用时只清空 fallback，不删除范围子路由。
+4. `mbc_register_handler_range()` 要求 `reg_len > 0`，不再接受 `reg_len == 0` 作为通配 fallback 表达方式。
 
-```c
-mbc_register_handler_range(ctx, func_code, 0, 0, handler)
-```
+### 2.4 示例与编译
 
-区别在于旧接口不会显式写入范围参数，但在匹配层面相当于通配 fallback。
+当前 serial master 示例已经补齐最小 wrap 路由演示：
+
+1. 一个 `mbc_set_handler()` 注册的 fallback handler。
+2. 两个 `mbc_register_handler_range()` 注册的范围 handler。
+3. `mbc_get_handler()` 检查已调整为适配 dispatcher 返回语义。
+
+已确认：
+
+1. 静态检查无当前改动相关报错。
+2. ESP-IDF 编译验证通过。
 
 ---
 
-## 下一步建议
+## 3. 本轮文件清单
 
-1. 先做编译验证，确认这组接口扩展和 pending handler 机制没有引入编译错误或链接错误。
-2. 补一个最小范围 handler 示例，验证 `func_code + reg_start` 的路由确实生效。
-3. 再决定是否继续推进最初草案中的两个增强项：
-   - 把超时移入 `mb_param_request_t`
-   - 把 O(n) 路由查找升级为 O(log n)
+### 3.1 本轮新增文件
+
+1. `ROUTER_WRAP_REVIEW.md`
+
+### 3.2 本轮修改文件
+
+1. `PROGRESS_SUMMARY.md`
+2. `examples/serial/mb_serial_master/main/serial_master.c`
+3. `modbus/mb_controller/common/esp_modbus_common.c`
+4. `modbus/mb_controller/common/include/esp_modbus_common.h`
+5. `modbus/mb_controller/serial/mbc_serial_master.c`
+6. `modbus/mb_controller/tcp/mbc_tcp_master.c`
+7. `modbus/mb_objects/functions/mbfunc_handling.c`
+8. `modbus/mb_objects/include/mb_common.h`
+9. `modbus/mb_objects/include/mb_master.h`
+10. `modbus/mb_objects/mb_master.c`
+
+### 3.3 本轮关联但不在当前未提交列表中的前序改动
+
+这些属于同一目标链路，但已在更早阶段落地：
+
+1. `modbus/mb_controller/common/include/esp_modbus_master.h`
+2. `modbus/mb_controller/common/esp_modbus_master.c`
+3. `modbus/mb_controller/common/mbc_master.h`
 
 ---
 
-## 本次总结结论
+## 4. 当前未完成项
 
-旧版进度总结里提到的 `components/mb_modbus_master/mb_handler_route.*` 和“阶段 1 已完成、阶段 2-4 未开始”已经不符合当前仓库状态。
+### 4.1 运行验证
 
-当前仓库的真实情况是：
+当前未完成：
 
-- 超时扩展已经贯通到公开接口和 serial/tcp 主站实现
-- 范围路由已经接入现有 handler 体系
-- 公开范围注册接口已经补齐
-- 示例已接入超时接口和最小范围路由示例
-- 尚未完成编译、测试和文档收口
+1. 范围命中行为的实机验证。
+2. 超时路径的实机验证。
+3. 异常响应路径下 pending 清理行为验证。
+4. 回归测试。
+
+### 4.2 文档收口
+
+当前仍建议后续补充：
+
+1. README 或正式接口文档中的 wrap 路由语义说明。
+2. `mbc_get_handler()` 返回 dispatcher 的行为说明。
+3. 重叠注册、默认 fallback 和 dispatcher 保留策略说明。
+
+### 4.3 后续增强项
+
+当前尚未实现：
+
+1. 将超时参数移入 `mb_param_request_t`。
+2. 新增统一默认超时设置接口。
+3. 将 router 容器从 `mb_master.c` 中拆出为独立文件。
+4. O(log n) 路由查找或优先级字段。
+
+---
+
+## 5. 状态评估
+
+按当前真实状态判断：
+
+1. 核心代码开发：已完成。
+2. 示例接入：已完成。
+3. 编译验证：已完成。
+4. 运行验证：未完成。
+5. 文档最终收口：进行中。
+
+总体进度估算：**约 80% - 85%**。
+
+当前适合对外表述为：**功能代码已完成并编译通过，等待结合实际工程进行运行验证。**

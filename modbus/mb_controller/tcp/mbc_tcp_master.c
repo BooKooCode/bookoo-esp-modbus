@@ -27,7 +27,7 @@
 #include "mb_common.h"              // for mb types definition
 #include "mb_config.h"
 #include "mb_proto.h"
-#include "mb_master.h"              // for mbm_get_handler_by_addr, mbm_set_pending_custom_handler
+#include "mb_master.h"              // for wrap-router request selection and pending target handling
 #include "mb_port_types.h"
 
 #if MB_MASTER_TCP_ENABLED
@@ -186,6 +186,14 @@ static esp_err_t mbc_tcp_master_send_request_internal(void *ctx, mb_param_reques
         uint8_t mb_command = request->command;
         uint16_t mb_offset = request->reg_start;
         uint16_t mb_size = request->reg_size;
+        mb_fn_handler_fp route_handler = NULL;
+        mb_err_enum_t route_status = mbm_router_select_on_request(mbm_controller_iface->mb_base,
+                                                                  mb_command, mb_offset,
+                                                                  &route_handler);
+
+        if ((route_status == MB_ENOERR) && route_handler) {
+            mbm_router_set_pending_target(mbm_controller_iface->mb_base, mb_command, route_handler);
+        }
 
         mb_port_timer_set_response_time(mbm_controller_iface->mb_base->port_obj, effective_timeout_ms);
 
@@ -193,8 +201,10 @@ static esp_err_t mbc_tcp_master_send_request_internal(void *ctx, mb_param_reques
         mbm_opts->reg_buffer_ptr = (uint8_t *)data_ptr;
         mbm_opts->reg_buffer_size = mb_size;
 
-        // Calls appropriate request function to send request and waits response
-        switch (mb_command) {
+        if (route_status != MB_ENOERR) {
+            ESP_LOGE(TAG, "%s: Incorrect or unsupported function in request (%u), error = (0x%x) ", __FUNCTION__, mb_command, (int)route_status);
+            mb_error = MB_ENOREG;
+        } else switch (mb_command) {
 #if MB_FUNC_READ_COILS_ENABLED
         case MB_FUNC_READ_COILS:
             mb_error = mbm_rq_read_coils(mbm_controller_iface->mb_base, mb_slave_addr,
@@ -261,25 +271,13 @@ static esp_err_t mbc_tcp_master_send_request_internal(void *ctx, mb_param_reques
             break;
 #endif
         default:
-            mb_fn_handler_fp handler = NULL;
-            // Range-aware handler lookup: find handler matching (func_code, reg_start)
-            mb_error = mbm_get_handler_by_addr(mbm_controller_iface->mb_base, mb_command, mb_offset, &handler);
-            if (mb_error == MB_ENOERR) {
-                // Store as pending so mbm_check_invoke_handler uses the correct range handler
-                mbm_set_pending_custom_handler(mbm_controller_iface->mb_base, mb_command, handler);
-                // send the request for custom command
-                mb_error = mbm_rq_custom(mbm_controller_iface->mb_base, mb_slave_addr, mb_command,
-                                         data_ptr, (uint16_t)(mb_size << 1),
-                                         timeout_ticks);
-                // Always clear pending handler (on both success and timeout)
-                mbm_clear_pending_custom_handler(mbm_controller_iface->mb_base);
-                ESP_LOGD(TAG, "%s: Send custom request (%u)", __FUNCTION__, mb_command);
-            } else {
-                ESP_LOGE(TAG, "%s: Incorrect or unsupported function in request (%u), error = (0x%x) ", __FUNCTION__, mb_command, (int)mb_error);
-                mb_error = MB_ENOREG;
-            }
+            mb_error = mbm_rq_custom(mbm_controller_iface->mb_base, mb_slave_addr, mb_command,
+                                     data_ptr, (uint16_t)(mb_size << 1),
+                                     timeout_ticks);
+            ESP_LOGD(TAG, "%s: Send custom request (%u)", __FUNCTION__, mb_command);
             break;
         }
+        mbm_router_clear_pending_target(mbm_controller_iface->mb_base);
     } else {
         ESP_LOGD(TAG, "%s:MBC semaphore take timeout (%lu ms).", __func__, (unsigned long)effective_timeout_ms);
         mb_error = MB_ETIMEDOUT;
