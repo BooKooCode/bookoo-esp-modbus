@@ -95,7 +95,8 @@ mb_err_enum_t mbm_delete_handler(mb_base_t *inst, uint8_t func_code)
     SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
         status = mb_wrap_router_clear_default_locked(&mbm_obj->router_state,
                                                      &mbm_obj->handler_descriptor,
-                                                     func_code);
+                                                     func_code,
+                                                     mbm_fn_router_dispatcher);
     }
     return status;
 }
@@ -134,9 +135,11 @@ mb_err_enum_t mbm_router_unregister_range(mb_base_t *inst, uint8_t func_code,
     mb_err_enum_t status = MB_EILLSTATE;
     SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
         status = mb_wrap_router_unregister_range_locked(&mbm_obj->router_state,
+                                                        &mbm_obj->handler_descriptor,
                                                         func_code,
                                                         reg_start,
-                                                        reg_len);
+                                                        reg_len,
+                                                        mbm_fn_router_dispatcher);
     }
     return status;
 }

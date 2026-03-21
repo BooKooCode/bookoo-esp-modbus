@@ -8,6 +8,7 @@
 #include "mb_proto.h"
 #include "mb_func.h"
 #include "mb_slave.h"
+#include "mb_wrap_router.h"
 #include "transport_common.h"
 #include "port_common.h"
 #include "ascii_transport.h"
@@ -37,6 +38,7 @@ typedef struct {
     uint64_t curr_trans_id;
     volatile uint16_t *pdu_snd_len;
     handler_descriptor_t handler_descriptor;
+    mb_wrap_router_state_t router_state;
 } mbs_object_t;
 
 mb_err_enum_t mbs_delete(mb_base_t *inst);
@@ -44,13 +46,63 @@ mb_err_enum_t mbs_enable(mb_base_t *inst);
 mb_err_enum_t mbs_disable(mb_base_t *inst);
 mb_err_enum_t mbs_poll(mb_base_t *inst);
 
+static mb_exception_t mbs_fn_router_dispatcher(void *inst_ptr, uint8_t *buf, uint16_t *len);
+
+static bool mbs_router_parse_request_addr(uint8_t func_code, const uint8_t *buf, uint16_t len, uint16_t *reg_addr)
+{
+    MB_RETURN_ON_FALSE((buf && reg_addr), false, TAG, "request parse arguments are invalid.");
+
+    switch (func_code) {
+#if MB_FUNC_READ_INPUT_ENABLED
+    case MB_FUNC_READ_INPUT_REGISTER:
+#endif
+#if MB_FUNC_READ_HOLDING_ENABLED
+    case MB_FUNC_READ_HOLDING_REGISTER:
+#endif
+#if MB_FUNC_WRITE_HOLDING_ENABLED
+    case MB_FUNC_WRITE_REGISTER:
+#endif
+#if MB_FUNC_WRITE_MULTIPLE_HOLDING_ENABLED
+    case MB_FUNC_WRITE_MULTIPLE_REGISTERS:
+#endif
+#if MB_FUNC_READWRITE_HOLDING_ENABLED
+    case MB_FUNC_READWRITE_MULTIPLE_REGISTERS:
+#endif
+#if MB_FUNC_READ_COILS_ENABLED
+    case MB_FUNC_READ_COILS:
+#endif
+#if MB_FUNC_WRITE_COIL_ENABLED
+    case MB_FUNC_WRITE_SINGLE_COIL:
+#endif
+#if MB_FUNC_WRITE_MULTIPLE_COILS_ENABLED
+    case MB_FUNC_WRITE_MULTIPLE_COILS:
+#endif
+#if MB_FUNC_READ_DISCRETE_INPUTS_ENABLED
+    case MB_FUNC_READ_DISCRETE_INPUTS:
+#endif
+        if (len < (MB_PDU_SIZE_MIN + 2U)) {
+            return false;
+        }
+        *reg_addr = (uint16_t)((buf[MB_PDU_DATA_OFF] << 8) | buf[MB_PDU_DATA_OFF + 1]);
+        *reg_addr = (uint16_t)(*reg_addr + 1U);
+        return true;
+
+    default:
+        return false;
+    }
+}
+
 // The helper function to register custom function handler for slave
 mb_err_enum_t mbs_set_handler(mb_base_t *inst, uint8_t func_code, mb_fn_handler_fp handler)
 {
     mbs_object_t *mbs_obj = MB_GET_OBJ_CTX(inst, mbs_object_t, base);
     mb_err_enum_t status = MB_EINVAL;
     SEMA_SECTION(mbs_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
-        status = mb_set_handler(&mbs_obj->handler_descriptor, func_code, handler);
+        status = mb_wrap_router_set_default_locked(&mbs_obj->router_state,
+                                                   &mbs_obj->handler_descriptor,
+                                                   func_code,
+                                                   handler,
+                                                   mbs_fn_router_dispatcher);
     }
     return status;
 }
@@ -62,7 +114,11 @@ mb_err_enum_t mbs_get_handler(mb_base_t *inst, uint8_t func_code, mb_fn_handler_
     mb_err_enum_t status = MB_EINVAL;
     if (handler) {
         SEMA_SECTION(mbs_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
-            status = mb_get_handler(&mbs_obj->handler_descriptor, func_code, handler);
+            status = mb_wrap_router_get_entry_handler_locked(&mbs_obj->router_state,
+                                                             &mbs_obj->handler_descriptor,
+                                                             func_code,
+                                                             mbs_fn_router_dispatcher,
+                                                             handler);
         }
     }
     return status;
@@ -73,7 +129,10 @@ mb_err_enum_t mbs_delete_handler(mb_base_t *inst, uint8_t func_code)
     mbs_object_t *mbs_obj = MB_GET_OBJ_CTX(inst, mbs_object_t, base);
     mb_err_enum_t status = MB_EILLSTATE;
     SEMA_SECTION(mbs_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
-        status = mb_delete_handler(&mbs_obj->handler_descriptor, func_code);
+        status = mb_wrap_router_clear_default_locked(&mbs_obj->router_state,
+                                                     &mbs_obj->handler_descriptor,
+                                                     func_code,
+                                                     mbs_fn_router_dispatcher);
     }
     return status;
 }
@@ -92,18 +151,84 @@ static mb_exception_t mbs_check_invoke_handler(mb_base_t *inst, uint8_t func_cod
 {
     mbs_object_t *mbs_obj = MB_GET_OBJ_CTX(inst, mbs_object_t, base);
     mb_exception_t exception = MB_EX_ILLEGAL_FUNCTION;
+    mb_fn_handler_fp handler = NULL;
     if (!func_code || (func_code & MB_FUNC_ERROR)) {
         return MB_EX_ILLEGAL_FUNCTION;
     }
     SEMA_SECTION(mbs_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
-        mb_fn_handler_fp handler = NULL;
         mb_err_enum_t status = mb_get_handler(&mbs_obj->handler_descriptor, func_code, &handler);
-        if ((status == MB_ENOERR) && handler) {
-            exception = handler(inst, buf, len);
-            ESP_LOGD(TAG, MB_OBJ_FMT": function (0x%x), invoke handler %p.", MB_OBJ_PARENT(inst), (int)func_code, handler);
-        }
+        (void)status;
+    }
+    if (handler) {
+        exception = handler(inst, buf, len);
+        ESP_LOGD(TAG, MB_OBJ_FMT": function (0x%x), invoke handler %p.", MB_OBJ_PARENT(inst), (int)func_code, handler);
     }
     return exception;
+}
+
+mb_err_enum_t mbs_router_register_range(mb_base_t *inst, uint8_t func_code,
+                                        uint16_t reg_start, uint16_t reg_len, mb_fn_handler_fp handler)
+{
+    mbs_object_t *mbs_obj = MB_GET_OBJ_CTX(inst, mbs_object_t, base);
+    mb_err_enum_t status = MB_EILLSTATE;
+    SEMA_SECTION(mbs_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
+        status = mb_wrap_router_register_range_locked(&mbs_obj->router_state,
+                                                      &mbs_obj->handler_descriptor,
+                                                      func_code,
+                                                      reg_start,
+                                                      reg_len,
+                                                      handler,
+                                                      mbs_fn_router_dispatcher);
+    }
+    return status;
+}
+
+mb_err_enum_t mbs_router_unregister_range(mb_base_t *inst, uint8_t func_code,
+                                          uint16_t reg_start, uint16_t reg_len)
+{
+    mbs_object_t *mbs_obj = MB_GET_OBJ_CTX(inst, mbs_object_t, base);
+    mb_err_enum_t status = MB_EILLSTATE;
+    SEMA_SECTION(mbs_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
+        status = mb_wrap_router_unregister_range_locked(&mbs_obj->router_state,
+                                                        &mbs_obj->handler_descriptor,
+                                                        func_code,
+                                                        reg_start,
+                                                        reg_len,
+                                                        mbs_fn_router_dispatcher);
+    }
+    return status;
+}
+
+static mb_exception_t mbs_fn_router_dispatcher(void *inst_ptr, uint8_t *buf, uint16_t *len)
+{
+    mb_base_t *inst = (mb_base_t *)inst_ptr;
+    mbs_object_t *mbs_obj = MB_GET_OBJ_CTX(inst, mbs_object_t, base);
+    uint8_t func_code = buf ? buf[MB_PDU_FUNC_OFF] : 0;
+    mb_fn_handler_fp handler = NULL;
+    uint16_t reg_addr = 0;
+
+    if (!func_code || !buf || !len) {
+        return MB_EX_ILLEGAL_FUNCTION;
+    }
+
+    SEMA_SECTION(mbs_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
+        if (mbs_router_parse_request_addr(func_code, buf, *len, &reg_addr)) {
+            mb_fn_handler_fp selected_handler = NULL;
+            mb_err_enum_t route_status = mb_wrap_router_select_locked(&mbs_obj->router_state,
+                                                                      &mbs_obj->handler_descriptor,
+                                                                      func_code,
+                                                                      reg_addr,
+                                                                      &selected_handler);
+            if ((route_status == MB_ENOERR) && selected_handler) {
+                handler = selected_handler;
+            }
+        }
+        if (!handler) {
+            handler = mb_wrap_router_resolve_dispatch_target_locked(&mbs_obj->router_state, func_code);
+        }
+    }
+
+    return handler ? handler(inst, buf, len) : MB_EX_ILLEGAL_FUNCTION;
 }
 
 static mb_err_enum_t mbs_register_default_handlers(mb_base_t *inst)
@@ -111,6 +236,7 @@ static mb_err_enum_t mbs_register_default_handlers(mb_base_t *inst)
     mbs_object_t *mbs_obj = MB_GET_OBJ_CTX(inst, mbs_object_t, base);
     mb_err_enum_t err = MB_EILLSTATE;
     LIST_INIT(&mbs_obj->handler_descriptor.head);
+    mb_wrap_router_init(&mbs_obj->router_state);
     mbs_obj->handler_descriptor.sema = xSemaphoreCreateBinary();
     (void)xSemaphoreGive(mbs_obj->handler_descriptor.sema);
     mbs_obj->handler_descriptor.instance = inst->descr.parent;
@@ -163,6 +289,7 @@ static mb_err_enum_t mbs_unregister_handlers(mb_base_t *inst)
     (void)xSemaphoreTake(mbs_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS);
     ESP_LOGD(TAG, "Close %s command handlers.", mbs_obj->base.descr.parent_name);
     (void)mb_delete_command_handlers(&mbs_obj->handler_descriptor);
+    mb_wrap_router_destroy(&mbs_obj->router_state);
     mbs_obj->handler_descriptor.instance = NULL;
     (void)xSemaphoreGive(mbs_obj->handler_descriptor.sema);
     vSemaphoreDelete(mbs_obj->handler_descriptor.sema);

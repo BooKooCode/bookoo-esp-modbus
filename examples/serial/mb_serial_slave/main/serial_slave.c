@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 #include "esp_err.h"
 #include "mbcontroller.h"       // for mbcontroller defines and api
 #include "modbus_params.h"      // for modbus parameters structures
@@ -45,10 +46,18 @@
 #define MB_READ_WRITE_MASK                  (MB_READ_MASK | MB_WRITE_MASK)
 #define MB_TEST_VALUE                       (12345.0)
 #define MB_CUST_DATA_MAX_LEN                (100)
+#define MB_SLAVE_ROUTE_TEST_FUNC_CODE       (0x03)
+#define MB_SLAVE_ROUTE_RANGE0_START         (MB_REG_HOLDING_START_AREA0 + 1)
+#define MB_SLAVE_ROUTE_RANGE0_LEN           (1)
+#define MB_SLAVE_ROUTE_RANGE1_START         (MB_REG_HOLDING_START_AREA1 + 1)
+#define MB_SLAVE_ROUTE_RANGE1_LEN           (1)
 
 static const char *TAG = "SLAVE_TEST";
 
 static void *mbc_slave_handle = NULL;
+static const char *holding_route_tag = "fallback";
+
+mb_exception_t mbs_fn_read_holding_reg(mb_base_t *inst, uint8_t *frame_ptr, uint16_t *len_buf);
 
 #if CONFIG_FMB_CONTROLLER_SLAVE_ID_SUPPORT
 #define MB_SLAVE_NAME_MAX_LEN 32
@@ -163,6 +172,76 @@ mb_exception_t my_custom_fc_handler(void *inst, uint8_t *frame_ptr, uint16_t *le
     return MB_EX_NONE; // Set the exception code for modbus object appropriately
 }
 
+static mb_exception_t slave_holding_fallback_handler(void *inst, uint8_t *frame_ptr, uint16_t *len)
+{
+    holding_route_tag = "fallback";
+    ESP_LOGI(TAG, "Holding read routed to fallback handler.");
+    return mbs_fn_read_holding_reg((mb_base_t *)inst, frame_ptr, len);
+}
+
+static mb_exception_t slave_holding_range0_handler(void *inst, uint8_t *frame_ptr, uint16_t *len)
+{
+    holding_route_tag = "range0";
+    ESP_LOGI(TAG, "Holding read routed to range0 handler [%u,%u).",
+             MB_SLAVE_ROUTE_RANGE0_START,
+             MB_SLAVE_ROUTE_RANGE0_START + MB_SLAVE_ROUTE_RANGE0_LEN);
+    return mbs_fn_read_holding_reg((mb_base_t *)inst, frame_ptr, len);
+}
+
+static mb_exception_t slave_holding_range1_handler(void *inst, uint8_t *frame_ptr, uint16_t *len)
+{
+    holding_route_tag = "range1";
+    ESP_LOGI(TAG, "Holding read routed to range1 handler [%u,%u).",
+             MB_SLAVE_ROUTE_RANGE1_START,
+             MB_SLAVE_ROUTE_RANGE1_START + MB_SLAVE_ROUTE_RANGE1_LEN);
+    return mbs_fn_read_holding_reg((mb_base_t *)inst, frame_ptr, len);
+}
+
+static void install_slave_range_route_demo(void)
+{
+    mb_fn_handler_fp handler = NULL;
+    esp_err_t err = mbc_set_handler(mbc_slave_handle,
+                                    MB_SLAVE_ROUTE_TEST_FUNC_CODE,
+                                    slave_holding_fallback_handler);
+    MB_RETURN_ON_FALSE((err == ESP_OK), ;, TAG,
+                       "could not install fallback handler for holding read, returned (0x%x).", (int)err);
+
+    err = mbc_register_handler_range(mbc_slave_handle,
+                                     MB_SLAVE_ROUTE_TEST_FUNC_CODE,
+                                     MB_SLAVE_ROUTE_RANGE0_START,
+                                     MB_SLAVE_ROUTE_RANGE0_LEN,
+                                     slave_holding_range0_handler);
+    MB_RETURN_ON_FALSE((err == ESP_OK), ;, TAG,
+                       "could not register slave range0 handler, returned (0x%x).", (int)err);
+
+    err = mbc_register_handler_range(mbc_slave_handle,
+                                     MB_SLAVE_ROUTE_TEST_FUNC_CODE,
+                                     MB_SLAVE_ROUTE_RANGE1_START,
+                                     MB_SLAVE_ROUTE_RANGE1_LEN,
+                                     slave_holding_range1_handler);
+    MB_RETURN_ON_FALSE((err == ESP_OK), ;, TAG,
+                       "could not register slave range1 handler, returned (0x%x).", (int)err);
+
+    err = mbc_register_handler_range(mbc_slave_handle,
+                                     MB_SLAVE_ROUTE_TEST_FUNC_CODE,
+                                     MB_SLAVE_ROUTE_RANGE0_START,
+                                     MB_SLAVE_ROUTE_RANGE0_LEN,
+                                     slave_holding_range1_handler);
+    MB_RETURN_ON_FALSE((err == ESP_ERR_INVALID_ARG), ;, TAG,
+                       "overlapping slave range registration should fail, returned (0x%x).", (int)err);
+
+    err = mbc_get_handler(mbc_slave_handle, MB_SLAVE_ROUTE_TEST_FUNC_CODE, &handler);
+    MB_RETURN_ON_FALSE((err == ESP_OK && handler != NULL && handler != slave_holding_fallback_handler), ;, TAG,
+                       "could not confirm dispatcher handler for holding read, returned (0x%x).", (int)err);
+
+    ESP_LOGI(TAG,
+             "Registered slave holding router demo: dispatcher + fallback + ranges [%u,%u) and [%u,%u).",
+             MB_SLAVE_ROUTE_RANGE0_START,
+             MB_SLAVE_ROUTE_RANGE0_START + MB_SLAVE_ROUTE_RANGE0_LEN,
+             MB_SLAVE_ROUTE_RANGE1_START,
+             MB_SLAVE_ROUTE_RANGE1_START + MB_SLAVE_ROUTE_RANGE1_LEN);
+}
+
 // An example application of Modbus slave. It is based on esp-modbus stack.
 // See deviceparams.h file for more information about assigned Modbus parameters.
 // These parameters can be accessed from main application and also can be changed
@@ -212,6 +291,8 @@ void app_main(void)
     err = mbc_get_handler(mbc_slave_handle, custom_command, &handler);
     MB_RETURN_ON_FALSE((err == ESP_OK && handler == my_custom_fc_handler), ;, TAG,
                        "could not get handler for command %d, returned (0x%x).", (int)custom_command, (int)err);
+
+    install_slave_range_route_demo();
 
     // The code below initializes Modbus register area descriptors
     // for Modbus Holding Registers, Input Registers, Coils and Discrete Inputs
@@ -314,14 +395,15 @@ void app_main(void)
 
         // Filter events and process them accordingly
         if (reg_info.type & (MB_EVENT_HOLDING_REG_WR | MB_EVENT_HOLDING_REG_RD)) {
-            ESP_LOGI(TAG, "OBJ %p, HOLDING %s (%" PRIu32 " us), ADDR:%u, TYPE:%u, INST_ADDR:0x%" PRIx32 ", SIZE:%u",
+            ESP_LOGI(TAG, "OBJ %p, HOLDING %s (%" PRIu32 " us), ADDR:%u, TYPE:%u, INST_ADDR:0x%" PRIx32 ", SIZE:%u, ROUTE:%s",
                      mbc_slave_handle,
                      rw_str,
                      reg_info.time_stamp,
                      (unsigned)reg_info.mb_offset,
                      (unsigned)reg_info.type,
                      (uint32_t)reg_info.address,
-                     (unsigned)reg_info.size);
+                     (unsigned)reg_info.size,
+                     holding_route_tag);
             if (reg_info.address == (uint8_t *)&holding_reg_params.holding_data0) {
                 (void)mbc_slave_lock(mbc_slave_handle);
                 holding_reg_params.holding_data0 += MB_CHAN_DATA_OFFSET;

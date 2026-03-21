@@ -92,7 +92,7 @@ esp_err_t mbc_get_handler_count(void *ctx, uint16_t *count)
 }
 
 /**
- * Register a handler for master requests with func_code + register address range.
+ * Register a handler for controller requests with func_code + register address range.
  */
 esp_err_t mbc_register_handler_range(void *ctx, uint8_t func_code, uint16_t reg_start,
                                      uint16_t reg_len, mb_fn_handler_fp handler)
@@ -105,10 +105,11 @@ esp_err_t mbc_register_handler_range(void *ctx, uint8_t func_code, uint16_t reg_
     mb_base_t *mb_obj = (mb_base_t *)mb_controller->mb_base;
     MB_RETURN_ON_FALSE(mb_obj, ESP_ERR_INVALID_STATE, TAG,
                        "Controller interface is not correctly initialized.");
-    MB_RETURN_ON_FALSE(mb_obj->descr.is_master, ESP_ERR_NOT_SUPPORTED, TAG,
-                       "Range handler registration is only supported for master mode.");
-    mb_err_enum_t ret = mbm_router_register_range(mb_controller->mb_base, func_code,
-                        reg_start, reg_len, handler);
+    mb_err_enum_t ret = mb_obj->descr.is_master
+                            ? mbm_router_register_range(mb_controller->mb_base, func_code,
+                                                        reg_start, reg_len, handler)
+                            : mbs_router_register_range(mb_controller->mb_base, func_code,
+                                                        reg_start, reg_len, handler);
     return MB_ERR_TO_ESP_ERR(ret);
 }
 
@@ -124,9 +125,10 @@ esp_err_t mbc_unregister_handler_range(void *ctx, uint8_t func_code, uint16_t re
     mb_base_t *mb_obj = (mb_base_t *)mb_controller->mb_base;
     MB_RETURN_ON_FALSE(mb_obj, ESP_ERR_INVALID_STATE, TAG,
                        "Controller interface is not correctly initialized.");
-    MB_RETURN_ON_FALSE(mb_obj->descr.is_master, ESP_ERR_NOT_SUPPORTED, TAG,
-                       "Range handler unregistration is only supported for master mode.");
-    mb_err_enum_t ret = mbm_router_unregister_range(mb_controller->mb_base, func_code,
-                        reg_start, reg_len);
+    mb_err_enum_t ret = mb_obj->descr.is_master
+                            ? mbm_router_unregister_range(mb_controller->mb_base, func_code,
+                                                          reg_start, reg_len)
+                            : mbs_router_unregister_range(mb_controller->mb_base, func_code,
+                                                          reg_start, reg_len);
     return MB_ERR_TO_ESP_ERR(ret);
 }

@@ -44,12 +44,15 @@ mb_err_enum_t mb_wrap_router_set_default_locked(mb_wrap_router_state_t *state, h
 mb_err_enum_t mb_wrap_router_get_entry_handler_locked(mb_wrap_router_state_t *state, handler_descriptor_t *descriptor, uint8_t func_code,
                                                       mb_fn_handler_fp dispatcher, mb_fn_handler_fp *handler);
 
-mb_err_enum_t mb_wrap_router_clear_default_locked(mb_wrap_router_state_t *state, handler_descriptor_t *descriptor, uint8_t func_code);
+mb_err_enum_t mb_wrap_router_clear_default_locked(mb_wrap_router_state_t *state, handler_descriptor_t *descriptor,
+                                                  uint8_t func_code, mb_fn_handler_fp dispatcher);
 
 mb_err_enum_t mb_wrap_router_register_range_locked(mb_wrap_router_state_t *state, handler_descriptor_t *descriptor, uint8_t func_code,
                                                    uint16_t reg_start, uint16_t reg_len, mb_fn_handler_fp handler, mb_fn_handler_fp dispatcher);
 
-mb_err_enum_t mb_wrap_router_unregister_range_locked(mb_wrap_router_state_t *state, uint8_t func_code, uint16_t reg_start, uint16_t reg_len);
+mb_err_enum_t mb_wrap_router_unregister_range_locked(mb_wrap_router_state_t *state, handler_descriptor_t *descriptor,
+                                                     uint8_t func_code, uint16_t reg_start, uint16_t reg_len,
+                                                     mb_fn_handler_fp dispatcher);
 
 mb_err_enum_t mb_wrap_router_select_locked(mb_wrap_router_state_t *state, handler_descriptor_t *descriptor, uint8_t func_code,
                                            uint16_t reg_addr, mb_fn_handler_fp *selected_handler);

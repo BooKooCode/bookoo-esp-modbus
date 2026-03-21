@@ -52,6 +52,40 @@ static mb_err_enum_t mb_wrap_router_ensure_dispatcher_locked(mb_wrap_router_stat
     return MB_ENOERR;
 }
 
+static mb_err_enum_t mb_wrap_router_cleanup_bucket_if_empty_locked(mb_wrap_router_state_t *state,
+                                                                   handler_descriptor_t *descriptor,
+                                                                   uint8_t func_code,
+                                                                   mb_fn_handler_fp dispatcher)
+{
+    MB_RETURN_ON_FALSE((state && descriptor && dispatcher), MB_EINVAL, TAG,
+                       "router cleanup arguments are invalid.");
+
+    mb_wrap_router_bucket_t *bucket = mb_wrap_router_find_bucket(state, func_code);
+    if (!bucket) {
+        return MB_ENORES;
+    }
+    if (bucket->default_handler || !LIST_EMPTY(&bucket->routes)) {
+        return MB_ENOERR;
+    }
+
+    mb_fn_handler_fp current_handler = NULL;
+    mb_err_enum_t status = mb_get_handler(descriptor, func_code, &current_handler);
+    if (status == MB_ENOERR) {
+        if (current_handler == dispatcher) {
+            status = mb_delete_handler(descriptor, func_code);
+            MB_RETURN_ON_FALSE((status == MB_ENOERR), status, TAG,
+                               "dispatcher uninstall failed for fc=0x%x.", (int)func_code);
+        }
+    } else {
+        MB_RETURN_ON_FALSE((status == MB_ENORES), status, TAG,
+                           "handler query failed for fc=0x%x.", (int)func_code);
+    }
+
+    LIST_REMOVE(bucket, entries);
+    free(bucket);
+    return MB_ENOERR;
+}
+
 void mb_wrap_router_init(mb_wrap_router_state_t *state)
 {
     if (state) {
@@ -111,12 +145,13 @@ mb_err_enum_t mb_wrap_router_get_entry_handler_locked(mb_wrap_router_state_t *st
 
 mb_err_enum_t mb_wrap_router_clear_default_locked(mb_wrap_router_state_t *state,
                                                   handler_descriptor_t *descriptor,
-                                                  uint8_t func_code)
+                                                  uint8_t func_code,
+                                                  mb_fn_handler_fp dispatcher)
 {
     mb_wrap_router_bucket_t *bucket = mb_wrap_router_find_bucket(state, func_code);
     if (bucket) {
         bucket->default_handler = NULL;
-        return MB_ENOERR;
+        return mb_wrap_router_cleanup_bucket_if_empty_locked(state, descriptor, func_code, dispatcher);
     }
     return mb_delete_handler(descriptor, func_code);
 }
@@ -155,9 +190,11 @@ mb_err_enum_t mb_wrap_router_register_range_locked(mb_wrap_router_state_t *state
 }
 
 mb_err_enum_t mb_wrap_router_unregister_range_locked(mb_wrap_router_state_t *state,
+                                                     handler_descriptor_t *descriptor,
                                                      uint8_t func_code,
                                                      uint16_t reg_start,
-                                                     uint16_t reg_len)
+                                                     uint16_t reg_len,
+                                                     mb_fn_handler_fp dispatcher)
 {
     mb_wrap_router_bucket_t *bucket = mb_wrap_router_find_bucket(state, func_code);
     if (!bucket) {
@@ -170,7 +207,7 @@ mb_err_enum_t mb_wrap_router_unregister_range_locked(mb_wrap_router_state_t *sta
         if ((route->reg_start == reg_start) && (route->reg_len == reg_len)) {
             LIST_REMOVE(route, entries);
             free(route);
-            return MB_ENOERR;
+            return mb_wrap_router_cleanup_bucket_if_empty_locked(state, descriptor, func_code, dispatcher);
         }
     }
     return MB_ENORES;
