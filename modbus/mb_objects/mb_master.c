@@ -8,6 +8,7 @@
 #include "mb_proto.h"
 #include "mb_func.h"
 #include "mb_master.h"
+#include "mb_wrap_router.h"
 #include "transport_common.h"
 #include "port_common.h"
 #include "ascii_transport.h"
@@ -24,24 +25,6 @@ typedef struct port_serial_opts_s mb_serial_opts_t;
 
 #if (MB_MASTER_ASCII_ENABLED || MB_MASTER_RTU_ENABLED || MB_MASTER_TCP_ENABLED)
 
-typedef struct mb_subroute_entry_s {
-    uint16_t reg_start;
-    uint16_t reg_len;
-    mb_fn_handler_fp handler;
-    LIST_ENTRY(mb_subroute_entry_s) entries;
-} mb_subroute_entry_t;
-
-typedef LIST_HEAD(mb_subroute_head, mb_subroute_entry_s) mb_subroute_head_t;
-
-typedef struct mb_router_bucket_s {
-    uint8_t func_code;
-    mb_fn_handler_fp default_handler;
-    mb_subroute_head_t routes;
-    LIST_ENTRY(mb_router_bucket_s) entries;
-} mb_router_bucket_t;
-
-typedef LIST_HEAD(mb_router_bucket_head, mb_router_bucket_s) mb_router_bucket_head_t;
-
 typedef struct {
     mb_base_t base;
 
@@ -57,11 +40,7 @@ typedef struct {
     uint8_t master_dst_addr;
     uint64_t curr_trans_id;
     handler_descriptor_t handler_descriptor;
-    mb_router_bucket_head_t router_buckets;
-    // Pending route target for the current in-flight request.
-    // Protected by mbm_sema in the controller layer (one request at a time).
-    mb_fn_handler_fp pending_custom_handler;
-    uint8_t pending_func_code;
+    mb_wrap_router_state_t router_state;
 } mbm_object_t;
 
 mb_err_enum_t mbm_tcp_create(mb_tcp_opts_t *tcp_opts, void **in_out_obj);
@@ -78,72 +57,16 @@ static uint8_t mbm_get_dest_addr(mb_base_t *inst);
 static void mbm_get_pdu_send_buf(mb_base_t *inst, uint8_t **buf);
 static mb_exception_t mbm_fn_router_dispatcher(void *inst_ptr, uint8_t *buf, uint16_t *len);
 
-static mb_router_bucket_t *mbm_router_find_bucket(mbm_object_t *mbm_obj, uint8_t func_code)
-{
-    mb_router_bucket_t *bucket = NULL;
-    LIST_FOREACH(bucket, &mbm_obj->router_buckets, entries) {
-        if (bucket->func_code == func_code) {
-            return bucket;
-        }
-    }
-    return NULL;
-}
-
-static bool mbm_router_ranges_overlap(uint16_t a_start, uint16_t a_len, uint16_t b_start, uint16_t b_len)
-{
-    uint32_t a_end = (uint32_t)a_start + a_len;
-    uint32_t b_end = (uint32_t)b_start + b_len;
-    return ((uint32_t)a_start < b_end) && ((uint32_t)b_start < a_end);
-}
-
-static mb_err_enum_t mbm_router_ensure_dispatcher_locked(mbm_object_t *mbm_obj, uint8_t func_code)
-{
-    mb_router_bucket_t *bucket = mbm_router_find_bucket(mbm_obj, func_code);
-    if (!bucket) {
-        bucket = (mb_router_bucket_t *)calloc(1, sizeof(mb_router_bucket_t));
-        MB_RETURN_ON_FALSE(bucket, MB_ENORES, TAG, "no mem for router bucket fc=0x%x.", (int)func_code);
-        bucket->func_code = func_code;
-        LIST_INIT(&bucket->routes);
-        LIST_INSERT_HEAD(&mbm_obj->router_buckets, bucket, entries);
-    }
-
-    mb_fn_handler_fp current_handler = NULL;
-    mb_err_enum_t status = mb_get_handler(&mbm_obj->handler_descriptor, func_code, &current_handler);
-    if ((status == MB_ENOERR) && (current_handler != mbm_fn_router_dispatcher)) {
-        bucket->default_handler = current_handler;
-    }
-    status = mb_set_handler(&mbm_obj->handler_descriptor, func_code, mbm_fn_router_dispatcher);
-    MB_RETURN_ON_FALSE((status == MB_ENOERR), status, TAG,
-                       "dispatcher install failed for fc=0x%x.", (int)func_code);
-    return MB_ENOERR;
-}
-
-static void mbm_router_delete_buckets(mbm_object_t *mbm_obj)
-{
-    mb_router_bucket_t *bucket = NULL;
-    while ((bucket = LIST_FIRST(&mbm_obj->router_buckets))) {
-        mb_subroute_entry_t *route = NULL;
-        while ((route = LIST_FIRST(&bucket->routes))) {
-            LIST_REMOVE(route, entries);
-            free(route);
-        }
-        LIST_REMOVE(bucket, entries);
-        free(bucket);
-    }
-}
-
 mb_err_enum_t mbm_set_handler(mb_base_t *inst, uint8_t func_code, mb_fn_handler_fp handler)
 {
     mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
     mb_err_enum_t status = MB_EILLSTATE;
     SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
-        mb_router_bucket_t *bucket = mbm_router_find_bucket(mbm_obj, func_code);
-        if (bucket) {
-            bucket->default_handler = handler;
-            status = mbm_router_ensure_dispatcher_locked(mbm_obj, func_code);
-        } else {
-            status = mb_set_handler(&mbm_obj->handler_descriptor, func_code, handler);
-        }
+        status = mb_wrap_router_set_default_locked(&mbm_obj->router_state,
+                                                   &mbm_obj->handler_descriptor,
+                                                   func_code,
+                                                   handler,
+                                                   mbm_fn_router_dispatcher);
     }
     return status;
 }
@@ -155,13 +78,11 @@ mb_err_enum_t mbm_get_handler(mb_base_t *inst, uint8_t func_code, mb_fn_handler_
     mb_err_enum_t status = MB_EILLSTATE;
     if (handler) {
         SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
-            mb_router_bucket_t *bucket = mbm_router_find_bucket(mbm_obj, func_code);
-            if (bucket) {
-                *handler = mbm_fn_router_dispatcher;
-                status = MB_ENOERR;
-            } else {
-                status = mb_get_handler(&mbm_obj->handler_descriptor, func_code, handler);
-            }
+            status = mb_wrap_router_get_entry_handler_locked(&mbm_obj->router_state,
+                                                             &mbm_obj->handler_descriptor,
+                                                             func_code,
+                                                             mbm_fn_router_dispatcher,
+                                                             handler);
         }
     }
     return status;
@@ -172,13 +93,9 @@ mb_err_enum_t mbm_delete_handler(mb_base_t *inst, uint8_t func_code)
     mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
     mb_err_enum_t status = MB_EILLSTATE;
     SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
-        mb_router_bucket_t *bucket = mbm_router_find_bucket(mbm_obj, func_code);
-        if (bucket) {
-            bucket->default_handler = NULL;
-            status = MB_ENOERR;
-        } else {
-            status = mb_delete_handler(&mbm_obj->handler_descriptor, func_code);
-        }
+        status = mb_wrap_router_clear_default_locked(&mbm_obj->router_state,
+                                                     &mbm_obj->handler_descriptor,
+                                                     func_code);
     }
     return status;
 }
@@ -197,40 +114,15 @@ mb_err_enum_t mbm_router_register_range(mb_base_t *inst, uint8_t func_code,
                                         uint16_t reg_start, uint16_t reg_len, mb_fn_handler_fp handler)
 {
     mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
-    MB_RETURN_ON_FALSE((handler && reg_len > 0), MB_EINVAL, TAG, "invalid range registration arguments.");
     mb_err_enum_t status = MB_EILLSTATE;
     SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
-        status = mbm_router_ensure_dispatcher_locked(mbm_obj, func_code);
-        if (status != MB_ENOERR) {
-            break;
-        }
-        mb_router_bucket_t *bucket = mbm_router_find_bucket(mbm_obj, func_code);
-        if (!bucket) {
-            status = MB_EILLSTATE;
-            break;
-        }
-
-        mb_subroute_entry_t *route = NULL;
-        LIST_FOREACH(route, &bucket->routes, entries) {
-            if (mbm_router_ranges_overlap(route->reg_start, route->reg_len, reg_start, reg_len)) {
-                status = MB_EINVAL;
-                break;
-            }
-        }
-        if (status == MB_EINVAL) {
-            break;
-        }
-
-        route = (mb_subroute_entry_t *)calloc(1, sizeof(mb_subroute_entry_t));
-        if (!route) {
-            status = MB_ENORES;
-            break;
-        }
-        route->reg_start = reg_start;
-        route->reg_len = reg_len;
-        route->handler = handler;
-        LIST_INSERT_HEAD(&bucket->routes, route, entries);
-        status = MB_ENOERR;
+        status = mb_wrap_router_register_range_locked(&mbm_obj->router_state,
+                                                      &mbm_obj->handler_descriptor,
+                                                      func_code,
+                                                      reg_start,
+                                                      reg_len,
+                                                      handler,
+                                                      mbm_fn_router_dispatcher);
     }
     return status;
 }
@@ -241,25 +133,10 @@ mb_err_enum_t mbm_router_unregister_range(mb_base_t *inst, uint8_t func_code,
     mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
     mb_err_enum_t status = MB_EILLSTATE;
     SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
-        mb_router_bucket_t *bucket = mbm_router_find_bucket(mbm_obj, func_code);
-        if (!bucket) {
-            status = MB_ENORES;
-            break;
-        }
-
-        mb_subroute_entry_t *route = NULL;
-        mb_subroute_entry_t *temp = NULL;
-        LIST_FOREACH_SAFE(route, &bucket->routes, entries, temp) {
-            if ((route->reg_start == reg_start) && (route->reg_len == reg_len)) {
-                LIST_REMOVE(route, entries);
-                free(route);
-                status = MB_ENOERR;
-                break;
-            }
-        }
-        if (status == MB_EILLSTATE) {
-            status = MB_ENORES;
-        }
+        status = mb_wrap_router_unregister_range_locked(&mbm_obj->router_state,
+                                                        func_code,
+                                                        reg_start,
+                                                        reg_len);
     }
     return status;
 }
@@ -269,27 +146,12 @@ mb_err_enum_t mbm_router_select_on_request(mb_base_t *inst, uint8_t func_code,
 {
     mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
     mb_err_enum_t status = MB_EILLSTATE;
-    MB_RETURN_ON_FALSE(selected_handler, MB_EINVAL, TAG, "selected handler pointer is null.");
-    *selected_handler = NULL;
     SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
-        mb_router_bucket_t *bucket = mbm_router_find_bucket(mbm_obj, func_code);
-        if (bucket) {
-            mb_subroute_entry_t *route = NULL;
-            LIST_FOREACH(route, &bucket->routes, entries) {
-                if ((reg_addr >= route->reg_start)
-                        && ((uint32_t)reg_addr < ((uint32_t)route->reg_start + route->reg_len))) {
-                    *selected_handler = route->handler;
-                    status = MB_ENOERR;
-                    break;
-                }
-            }
-            if (status != MB_ENOERR) {
-                status = bucket->default_handler ? MB_ENOERR : MB_ENORES;
-            }
-        } else {
-            mb_fn_handler_fp handler = NULL;
-            status = mb_get_handler(&mbm_obj->handler_descriptor, func_code, &handler);
-        }
+        status = mb_wrap_router_select_locked(&mbm_obj->router_state,
+                                              &mbm_obj->handler_descriptor,
+                                              func_code,
+                                              reg_addr,
+                                              selected_handler);
     }
     return status;
 }
@@ -297,15 +159,13 @@ mb_err_enum_t mbm_router_select_on_request(mb_base_t *inst, uint8_t func_code,
 void mbm_router_set_pending_target(mb_base_t *inst, uint8_t func_code, mb_fn_handler_fp handler)
 {
     mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
-    mbm_obj->pending_custom_handler = handler;
-    mbm_obj->pending_func_code = func_code;
+    mb_wrap_router_set_pending(&mbm_obj->router_state, func_code, handler);
 }
 
 void mbm_router_clear_pending_target(mb_base_t *inst)
 {
     mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
-    mbm_obj->pending_custom_handler = NULL;
-    mbm_obj->pending_func_code = 0;
+    mb_wrap_router_clear_pending(&mbm_obj->router_state);
 }
 
 static mb_exception_t mbm_fn_router_dispatcher(void *inst_ptr, uint8_t *buf, uint16_t *len)
@@ -320,16 +180,7 @@ static mb_exception_t mbm_fn_router_dispatcher(void *inst_ptr, uint8_t *buf, uin
     }
 
     SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
-        if (mbm_obj->pending_custom_handler && (mbm_obj->pending_func_code == func_code)) {
-            handler = mbm_obj->pending_custom_handler;
-            mbm_obj->pending_custom_handler = NULL;
-            mbm_obj->pending_func_code = 0;
-        } else {
-            mb_router_bucket_t *bucket = mbm_router_find_bucket(mbm_obj, func_code);
-            if (bucket) {
-                handler = bucket->default_handler;
-            }
-        }
+        handler = mb_wrap_router_resolve_dispatch_target_locked(&mbm_obj->router_state, func_code);
     }
 
     return handler ? handler(inst, buf, len) : MB_EX_ILLEGAL_FUNCTION;
@@ -362,7 +213,7 @@ static mb_err_enum_t mbm_register_default_handlers(mb_base_t *inst)
     mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
     mb_err_enum_t err = MB_EILLSTATE;
     LIST_INIT(&mbm_obj->handler_descriptor.head);
-    LIST_INIT(&mbm_obj->router_buckets);
+    mb_wrap_router_init(&mbm_obj->router_state);
     mbm_obj->handler_descriptor.sema = xSemaphoreCreateBinary();
     (void)xSemaphoreGive(mbm_obj->handler_descriptor.sema);
     mbm_obj->handler_descriptor.instance = inst->descr.parent;
@@ -415,7 +266,7 @@ static mb_err_enum_t mbm_unregister_handlers(mb_base_t *inst)
     (void)xSemaphoreTake(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS);
     ESP_LOGD(TAG, "Close %s command handlers.", mbm_obj->base.descr.parent_name);
     (void)mb_delete_command_handlers(&mbm_obj->handler_descriptor);
-    mbm_router_delete_buckets(mbm_obj);
+    mb_wrap_router_destroy(&mbm_obj->router_state);
     mbm_obj->handler_descriptor.instance = NULL;
     (void)xSemaphoreGive(mbm_obj->handler_descriptor.sema);
     vSemaphoreDelete(mbm_obj->handler_descriptor.sema);

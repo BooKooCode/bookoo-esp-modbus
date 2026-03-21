@@ -23,7 +23,7 @@
 #include "mb_common.h"              // for mb types definition
 #include "mb_config.h"
 #include "mb_proto.h"
-#include "mb_master.h"              // for wrap-router request selection and pending target handling
+#include "mb_wrap_router.h"         // for wrap-router request selection and pending target handling
 
 #if (CONFIG_FMB_COMM_MODE_ASCII_EN || CONFIG_FMB_COMM_MODE_RTU_EN)
 

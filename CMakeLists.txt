@@ -13,6 +13,7 @@ set(srcs
     "mb_controller/tcp/mbc_tcp_master.c"
     "mb_controller/tcp/mbc_tcp_slave.c"
     "mb_objects/mb_master.c"
+    "mb_objects/mb_wrap_router.c"
     "mb_objects/mb_slave.c"
     "mb_objects/functions/mbfunc_handling.c"
     "mb_objects/functions/mbfunccoils_master.c"

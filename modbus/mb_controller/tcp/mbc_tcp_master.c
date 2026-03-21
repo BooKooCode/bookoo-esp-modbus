@@ -27,7 +27,7 @@
 #include "mb_common.h"              // for mb types definition
 #include "mb_config.h"
 #include "mb_proto.h"
-#include "mb_master.h"              // for wrap-router request selection and pending target handling
+#include "mb_wrap_router.h"         // for wrap-router request selection and pending target handling
 #include "mb_port_types.h"
 
 #if MB_MASTER_TCP_ENABLED

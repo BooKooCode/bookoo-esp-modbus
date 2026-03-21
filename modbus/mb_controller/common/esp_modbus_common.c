@@ -7,7 +7,7 @@
 #include "mbc_master.h"         // for master interface define
 #include "mbc_slave.h"          // for slave interface define
 #include "esp_modbus_common.h"  // for public interface defines
-#include "mb_master.h"          // for wrap router registration helpers
+#include "mb_wrap_router.h"     // for wrap router registration helpers
 
 static const char TAG[] __attribute__((unused)) = "MB_CONTROLLER_COMMON";
 

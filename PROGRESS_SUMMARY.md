@@ -2,7 +2,7 @@
 
 **更新时间**: 2026-03-21
 **项目**: Fork esp-modbus 作为 ESP32S3 子项目的主机接口
-**当前状态**: 超时接口扩展和 wrap 范围路由器改造已完成，代码已通过编译验证，当前进入运行验证前的收口阶段。
+**当前状态**: 超时接口扩展、wrap 范围路由器改造和 router 独立拆分已完成，代码已通过编译验证，当前进入运行验证前的收口阶段。
 
 ---
 
@@ -12,7 +12,7 @@
 
 1. 主站单次调用超时接口已经打通。
 2. 侵入式范围路由实现已经回退。
-3. 新的 wrap 路由器已经接入 master 请求/响应链路。
+3. 新的 wrap 路由器已经接入 master 请求/响应链路，并已从 `mb_master.c` 中迁出到独立文件。
 4. 公开范围注册接口已经切换到新路由器后端。
 5. serial master 示例已同步到 dispatcher + fallback + ranges 语义。
 6. 代码已完成 ESP-IDF 编译验证，但尚未在实际工程中做运行测试。
@@ -52,6 +52,7 @@ if (!effective_timeout_ms) {
 4. 请求阶段匹配范围子路由，响应阶段仅转发到 pending target 或 default fallback。
 5. 范围重叠注册被拒绝。
 6. 范围接口当前仅支持 Master。
+7. wrap router 核心状态与算法已迁出到独立的 `mb_wrap_router.c/.h` 内部模块。
 
 核心内部接口已经落地：
 
@@ -93,6 +94,8 @@ mbm_fn_router_dispatcher()
 ### 3.1 本轮新增文件
 
 1. `ROUTER_WRAP_REVIEW.md`
+2. `modbus/mb_objects/include/mb_wrap_router.h`
+3. `modbus/mb_objects/mb_wrap_router.c`
 
 ### 3.2 本轮修改文件
 
@@ -106,6 +109,7 @@ mbm_fn_router_dispatcher()
 8. `modbus/mb_objects/include/mb_common.h`
 9. `modbus/mb_objects/include/mb_master.h`
 10. `modbus/mb_objects/mb_master.c`
+11. `CMakeLists.txt`
 
 ### 3.3 本轮关联但不在当前未提交列表中的前序改动
 
@@ -142,8 +146,7 @@ mbm_fn_router_dispatcher()
 
 1. 将超时参数移入 `mb_param_request_t`。
 2. 新增统一默认超时设置接口。
-3. 将 router 容器从 `mb_master.c` 中拆出为独立文件。
-4. O(log n) 路由查找或优先级字段。
+3. O(log n) 路由查找或优先级字段。
 
 ---
 
