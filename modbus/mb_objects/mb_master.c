@@ -145,7 +145,8 @@ mb_err_enum_t mbm_router_unregister_range(mb_base_t *inst, uint8_t func_code,
 }
 
 mb_err_enum_t mbm_router_select_on_request(mb_base_t *inst, uint8_t func_code,
-                                           uint16_t reg_addr, mb_fn_handler_fp *selected_handler)
+                                           uint16_t reg_start, uint16_t reg_len,
+                                           mb_fn_handler_fp *selected_handler)
 {
     mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
     mb_err_enum_t status = MB_EILLSTATE;
@@ -153,7 +154,8 @@ mb_err_enum_t mbm_router_select_on_request(mb_base_t *inst, uint8_t func_code,
         status = mb_wrap_router_select_locked(&mbm_obj->router_state,
                                               &mbm_obj->handler_descriptor,
                                               func_code,
-                                              reg_addr,
+                                              reg_start,
+                                              reg_len,
                                               selected_handler);
     }
     return status;
@@ -162,13 +164,17 @@ mb_err_enum_t mbm_router_select_on_request(mb_base_t *inst, uint8_t func_code,
 void mbm_router_set_pending_target(mb_base_t *inst, uint8_t func_code, mb_fn_handler_fp handler)
 {
     mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
-    mb_wrap_router_set_pending(&mbm_obj->router_state, func_code, handler);
+    SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
+        mb_wrap_router_set_pending(&mbm_obj->router_state, func_code, handler);
+    }
 }
 
 void mbm_router_clear_pending_target(mb_base_t *inst)
 {
     mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
-    mb_wrap_router_clear_pending(&mbm_obj->router_state);
+    SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
+        mb_wrap_router_clear_pending(&mbm_obj->router_state);
+    }
 }
 
 static mb_exception_t mbm_fn_router_dispatcher(void *inst_ptr, uint8_t *buf, uint16_t *len)

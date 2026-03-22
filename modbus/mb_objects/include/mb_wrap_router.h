@@ -55,7 +55,7 @@ mb_err_enum_t mb_wrap_router_unregister_range_locked(mb_wrap_router_state_t *sta
                                                      mb_fn_handler_fp dispatcher);
 
 mb_err_enum_t mb_wrap_router_select_locked(mb_wrap_router_state_t *state, handler_descriptor_t *descriptor, uint8_t func_code,
-                                           uint16_t reg_addr, mb_fn_handler_fp *selected_handler);
+                                           uint16_t reg_start, uint16_t reg_len, mb_fn_handler_fp *selected_handler);
 
 void mb_wrap_router_set_pending(mb_wrap_router_state_t *state, uint8_t func_code, mb_fn_handler_fp handler);
 
@@ -67,7 +67,9 @@ mb_err_enum_t mbm_router_register_range(mb_base_t *inst, uint8_t func_code, uint
 
 mb_err_enum_t mbm_router_unregister_range(mb_base_t *inst, uint8_t func_code, uint16_t reg_start, uint16_t reg_len);
 
-mb_err_enum_t mbm_router_select_on_request(mb_base_t *inst, uint8_t func_code, uint16_t reg_addr, mb_fn_handler_fp *selected_handler);
+mb_err_enum_t mbm_router_select_on_request(mb_base_t *inst, uint8_t func_code,
+                                           uint16_t reg_start, uint16_t reg_len,
+                                           mb_fn_handler_fp *selected_handler);
 
 void mbm_router_set_pending_target(mb_base_t *inst, uint8_t func_code, mb_fn_handler_fp handler);
 

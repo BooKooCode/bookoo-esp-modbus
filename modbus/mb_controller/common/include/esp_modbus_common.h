@@ -265,10 +265,12 @@ esp_err_t mbc_get_handler_count(void *ctx, uint16_t *count);
 
 /**
  * @brief Register a handler for requests matching func_code AND a register address range.
- *        The range route is evaluated on request dispatch. An internal dispatcher is installed
- *        automatically for the func_code on first registration. The default fallback handler
- *        remains the one configured through mbc_set_handler(). Supported in both master and slave
- *        mode; slave routing is resolved directly from the incoming request PDU.
+ *        The range route is evaluated on request dispatch. A request matches only when its full
+ *        single-range access interval is fully contained within the registered range. An internal
+ *        dispatcher is installed automatically for the func_code on first registration. The default
+ *        fallback handler remains the one configured through mbc_set_handler(). Supported in both
+ *        master and slave mode for single-range request function codes; 0x17 currently falls back
+ *        to the default handler path and does not participate in range routing.
  *
  * @param[in] ctx    context pointer to the controller object
  * @param[in] func_code  Modbus function code (1-127)

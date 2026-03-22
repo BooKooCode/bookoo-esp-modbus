@@ -48,9 +48,18 @@ mb_err_enum_t mbs_poll(mb_base_t *inst);
 
 static mb_exception_t mbs_fn_router_dispatcher(void *inst_ptr, uint8_t *buf, uint16_t *len);
 
-static bool mbs_router_parse_request_addr(uint8_t func_code, const uint8_t *buf, uint16_t len, uint16_t *reg_addr)
+static uint16_t mbs_router_parse_u16(const uint8_t *buf, uint16_t offset)
 {
-    MB_RETURN_ON_FALSE((buf && reg_addr), false, TAG, "request parse arguments are invalid.");
+    return (uint16_t)((buf[offset] << 8) | buf[offset + 1]);
+}
+
+static bool mbs_router_parse_request_range(uint8_t func_code,
+                                           const uint8_t *buf,
+                                           uint16_t len,
+                                           uint16_t *reg_addr,
+                                           uint16_t *reg_len)
+{
+    MB_RETURN_ON_FALSE((buf && reg_addr && reg_len), false, TAG, "request parse arguments are invalid.");
 
     switch (func_code) {
 #if MB_FUNC_READ_INPUT_ENABLED
@@ -65,9 +74,6 @@ static bool mbs_router_parse_request_addr(uint8_t func_code, const uint8_t *buf,
 #if MB_FUNC_WRITE_MULTIPLE_HOLDING_ENABLED
     case MB_FUNC_WRITE_MULTIPLE_REGISTERS:
 #endif
-#if MB_FUNC_READWRITE_HOLDING_ENABLED
-    case MB_FUNC_READWRITE_MULTIPLE_REGISTERS:
-#endif
 #if MB_FUNC_READ_COILS_ENABLED
     case MB_FUNC_READ_COILS:
 #endif
@@ -80,11 +86,31 @@ static bool mbs_router_parse_request_addr(uint8_t func_code, const uint8_t *buf,
 #if MB_FUNC_READ_DISCRETE_INPUTS_ENABLED
     case MB_FUNC_READ_DISCRETE_INPUTS:
 #endif
-        if (len < (MB_PDU_SIZE_MIN + 2U)) {
+        if (len < (MB_PDU_SIZE_MIN + 4U)) {
             return false;
         }
-        *reg_addr = (uint16_t)((buf[MB_PDU_DATA_OFF] << 8) | buf[MB_PDU_DATA_OFF + 1]);
+        *reg_addr = mbs_router_parse_u16(buf, MB_PDU_DATA_OFF);
         *reg_addr = (uint16_t)(*reg_addr + 1U);
+#if MB_FUNC_WRITE_HOLDING_ENABLED
+        if (func_code == MB_FUNC_WRITE_REGISTER) {
+            *reg_len = 1;
+            return true;
+        }
+#endif
+#if MB_FUNC_WRITE_COIL_ENABLED
+        if (func_code == MB_FUNC_WRITE_SINGLE_COIL) {
+            *reg_len = 1;
+            return true;
+        }
+#endif
+        *reg_len = mbs_router_parse_u16(buf, (uint16_t)(MB_PDU_DATA_OFF + 2U));
+        return (*reg_len > 0);
+
+#if MB_FUNC_READWRITE_HOLDING_ENABLED
+    case MB_FUNC_READWRITE_MULTIPLE_REGISTERS:
+        return false;
+#endif
+
         return true;
 
     default:
@@ -206,18 +232,20 @@ static mb_exception_t mbs_fn_router_dispatcher(void *inst_ptr, uint8_t *buf, uin
     uint8_t func_code = buf ? buf[MB_PDU_FUNC_OFF] : 0;
     mb_fn_handler_fp handler = NULL;
     uint16_t reg_addr = 0;
+    uint16_t reg_len = 0;
 
     if (!func_code || !buf || !len) {
         return MB_EX_ILLEGAL_FUNCTION;
     }
 
     SEMA_SECTION(mbs_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
-        if (mbs_router_parse_request_addr(func_code, buf, *len, &reg_addr)) {
+        if (mbs_router_parse_request_range(func_code, buf, *len, &reg_addr, &reg_len)) {
             mb_fn_handler_fp selected_handler = NULL;
             mb_err_enum_t route_status = mb_wrap_router_select_locked(&mbs_obj->router_state,
                                                                       &mbs_obj->handler_descriptor,
                                                                       func_code,
                                                                       reg_addr,
+                                                                      reg_len,
                                                                       &selected_handler);
             if ((route_status == MB_ENOERR) && selected_handler) {
                 handler = selected_handler;

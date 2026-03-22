@@ -27,6 +27,16 @@ static bool mb_wrap_router_ranges_overlap(uint16_t a_start, uint16_t a_len, uint
     return ((uint32_t)a_start < b_end) && ((uint32_t)b_start < a_end);
 }
 
+static bool mb_wrap_router_range_contains(uint16_t route_start,
+                                          uint16_t route_len,
+                                          uint16_t req_start,
+                                          uint16_t req_len)
+{
+    uint32_t route_end = (uint32_t)route_start + route_len;
+    uint32_t req_end = (uint32_t)req_start + req_len;
+    return ((uint32_t)req_start >= route_start) && (req_end <= route_end);
+}
+
 static mb_err_enum_t mb_wrap_router_ensure_dispatcher_locked(mb_wrap_router_state_t *state,
                                                              handler_descriptor_t *descriptor,
                                                              uint8_t func_code,
@@ -216,7 +226,8 @@ mb_err_enum_t mb_wrap_router_unregister_range_locked(mb_wrap_router_state_t *sta
 mb_err_enum_t mb_wrap_router_select_locked(mb_wrap_router_state_t *state,
                                            handler_descriptor_t *descriptor,
                                            uint8_t func_code,
-                                           uint16_t reg_addr,
+                                           uint16_t reg_start,
+                                           uint16_t reg_len,
                                            mb_fn_handler_fp *selected_handler)
 {
     MB_RETURN_ON_FALSE(selected_handler, MB_EINVAL, TAG, "selected handler pointer is null.");
@@ -225,11 +236,12 @@ mb_err_enum_t mb_wrap_router_select_locked(mb_wrap_router_state_t *state,
     mb_wrap_router_bucket_t *bucket = mb_wrap_router_find_bucket(state, func_code);
     if (bucket) {
         mb_wrap_subroute_entry_t *route = NULL;
-        LIST_FOREACH(route, &bucket->routes, entries) {
-            if ((reg_addr >= route->reg_start)
-                    && ((uint32_t)reg_addr < ((uint32_t)route->reg_start + route->reg_len))) {
-                *selected_handler = route->handler;
-                return MB_ENOERR;
+        if (reg_len > 0) {
+            LIST_FOREACH(route, &bucket->routes, entries) {
+                if (mb_wrap_router_range_contains(route->reg_start, route->reg_len, reg_start, reg_len)) {
+                    *selected_handler = route->handler;
+                    return MB_ENOERR;
+                }
             }
         }
         return bucket->default_handler ? MB_ENOERR : MB_ENORES;

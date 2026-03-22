@@ -33,7 +33,7 @@ esp_err_t mbc_unregister_handler_range(void *ctx, uint8_t func_code,
 
 ### 2.1 适用场景
 
-当你希望同一个功能码下，按照寄存器起始地址把请求分发给不同 handler 时使用。
+当你希望同一个功能码下，按照寄存器访问区间把请求分发给不同 handler 时使用。
 
 最常见的写法：
 
@@ -50,10 +50,12 @@ mbc_register_handler_range(master_handle, fc, 10, 1, my_range1_handler);
 
 行为如下：
 
-1. 请求发出前，先用 `func_code + reg_start` 匹配范围。
+1. 请求发出前，先用 `func_code + 请求完整区间` 匹配范围。
 2. 命中范围时，请求对应的响应会转发给该范围 handler。
 3. 未命中范围但存在 fallback 时，回退到 fallback handler。
 4. 未命中范围且没有 fallback 时，请求直接失败。
+
+判断条件不是“起始地址落在范围内”即可，而是“请求完整区间必须被注册范围完整包含”。
 
 判断规则：
 
@@ -64,12 +66,14 @@ mbc_register_handler_range(master_handle, fc, 10, 1, my_range1_handler);
 
 ### 2.2 `reg_start` 该填什么
 
-Master 侧匹配的是“你发请求时使用的起始寄存器值”。
+Master 侧匹配的是“你发请求时使用的完整访问区间”。
 
 也就是说：
 
-1. 如果你走 `mbc_master_send_request()` / `mbc_master_send_request_with_timeout()`，就按 `request.reg_start` 来匹配。
+1. 如果你走 `mbc_master_send_request()` / `mbc_master_send_request_with_timeout()`，就按 `request.reg_start + request.reg_size` 来匹配。
 2. 如果你走参数表接口，通常就是参数描述表里的 `mb_reg_start`，该值是 0-based。
+3. 对单寄存器/单线圈写，内部会按长度 1 参与匹配。
+4. 对 `0x17`，当前第一阶段不会参与 range routing，而是直接走 fallback handler。
 
 ### 2.3 最小示例位置
 
@@ -102,7 +106,7 @@ mbc_register_handler_range(slave_handle, fc, range1_start, range1_len,
 
 行为如下：
 
-1. slave 在 dispatcher 内直接从请求 PDU 解析起始地址。
+1. slave 在 dispatcher 内直接从请求 PDU 解析请求区间。
 2. 命中范围时，调用对应范围 handler。
 3. 未命中时，回退到 `mbc_set_handler()` 设置的 fallback handler。
 
@@ -117,7 +121,7 @@ mbc_register_handler_range(slave_handle, fc, range1_start, range1_len,
 
 这是 slave 侧最容易写错的地方。
 
-当前 slave 范围路由匹配的是“slave 内部处理链看到的起始地址”。
+当前 slave 范围路由匹配的是“slave 内部处理链看到的完整访问区间”。
 
 对标准寄存器/线圈功能码，内部地址通常比协议报文里的 0-based 起始地址多 1。
 
@@ -155,11 +159,12 @@ mbc_register_handler_range(slave_handle, fc, range1_start, range1_len,
 启用范围路由后，可以按下面理解：
 
 1. 入口仍然是 `func_code -> dispatcher`
-2. dispatcher 内部再决定走哪个范围 handler 或 fallback
+2. dispatcher 内部再根据完整单区间请求决定走哪个范围 handler 或 fallback
 3. dispatcher 安装后不会因为你删除某个范围而自动卸载
 4. 删除 fallback 也不会影响已注册的范围子路由
 5. 只注册 range 也能工作；`mbc_set_handler()` 不是前置必需步骤
 6. 同一功能码下若同时存在 range 和 fallback，则范围命中优先，fallback 只在未命中时触发
+7. `0x17` 当前不参与 range routing，只走 fallback
 
 ---
 
@@ -168,8 +173,9 @@ mbc_register_handler_range(slave_handle, fc, range1_start, range1_len,
 1. `mbc_set_handler()` = 默认 fallback
 2. `mbc_register_handler_range()` = 范围子路由
 3. `mbc_get_handler()` = wrap 启用后拿到 dispatcher
-4. master 按“发请求时的 reg_start”匹配
-5. slave 按“内部处理链里的起始地址”匹配，标准寄存器功能码通常要写 `start_offset + 1`
+4. master 按“发请求时的完整单区间请求”匹配
+5. slave 按“内部处理链里的完整单区间请求”匹配，标准寄存器功能码通常要写 `start_offset + 1`
 6. 范围不能重叠
 7. `mbc_set_handler()` 不是必须，只有需要 fallback 时才注册
 8. 命中范围时只走范围 handler，不再走 fallback
+9. `0x17` 当前先走 fallback，不参加范围命中

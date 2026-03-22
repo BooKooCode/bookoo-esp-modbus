@@ -2,7 +2,7 @@
 
 **更新时间**: 2026-03-22
 **项目**: Fork esp-modbus 作为 ESP32S3 子项目的 Modbus 接口基础组件
-**当前状态**: 超时接口扩展、wrap 范围路由器改造、router 独立拆分、slave 侧范围路由支持以及 router 生命周期可逆化首轮实现已完成，代码已通过静态校验与既有编译链验证，当前进入运行验证前的收口阶段。
+**当前状态**: 超时接口扩展、wrap 范围路由器改造、router 独立拆分、slave 侧范围路由支持、router 生命周期可逆化首轮实现以及 master pending 状态并发保护首轮修复已完成，代码已通过静态校验与既有编译链验证，当前进入运行验证前的收口阶段。
 
 ---
 
@@ -16,7 +16,8 @@
 4. 公开范围注册接口已经切换到新路由器后端，当前同时支持 master 和 slave。
 5. serial master 与 serial slave 示例均已同步到 dispatcher + fallback + ranges 语义。
 6. range router 的空 bucket 自动回收逻辑已接入，删除 fallback/注销最后一个 range 后可自动卸载 dispatcher 并清理 bucket。
-7. 代码已完成 ESP-IDF 编译验证与本轮改动静态校验，但尚未在实际工程中做运行测试。
+7. master pending target 的设置、清理与消费路径现已统一使用同一把 handler semaphore 保护。
+8. 代码已完成 ESP-IDF 编译验证与本轮改动静态校验，但尚未在实际工程中做运行测试。
 
 ---
 
@@ -56,6 +57,7 @@ if (!effective_timeout_ms) {
 7. 范围重叠注册被拒绝。
 8. wrap router 核心状态与算法已迁出到独立的 `mb_wrap_router.c/.h` 内部模块。
 9. 当某功能码下 `default_handler == NULL` 且已无任何 range 子路由时，会自动卸载 dispatcher 并回收对应 router bucket。
+10. master pending route 的 set / clear / resolve 路径已统一到 `handler_descriptor.sema` 同步边界内，消除了此前“读加锁、写不加锁”的状态访问不对称。
 
 核心内部接口已经落地：
 
@@ -79,8 +81,8 @@ mbs_fn_router_dispatcher()
 2. `mbc_get_handler()` 在 wrap 已启用时返回 dispatcher，而不是原始 fallback handler。
 3. `mbc_delete_handler()` 在 wrap 已启用时只清空 fallback，不删除范围子路由。
 4. `mbc_register_handler_range()` 要求 `reg_len > 0`，不再接受 `reg_len == 0` 作为通配 fallback 表达方式。
-5. slave 范围路由当前按请求中的起始地址字段进行匹配；对标准寄存器/线圈访问功能码可直接生效。
-6. slave 对 0x17 当前按读起始地址参与范围匹配。
+5. 单区间 range 路由当前按“请求完整区间必须被已注册范围完整包含”的规则匹配；对标准寄存器/线圈访问功能码可直接生效。
+6. `0x17` 当前不参与 range 路由选择，统一回落到 default fallback handler。
 7. 对同一功能码，若所有 range 已注销且 fallback 为空，router 会自动回收到未启用状态。
 
 ### 2.4 示例与编译
@@ -97,6 +99,7 @@ mbs_fn_router_dispatcher()
 1. 静态检查无当前改动相关报错。
 2. 在按以下 PowerShell 初始化链路加载 ESP-IDF 环境后，`examples/serial/mb_serial_slave` 已完成 `idf.py build` 验证。
 3. 本轮对 `mb_wrap_router.c`、`mb_master.c`、`mb_slave.c`、`mb_wrap_router.h` 的签名与静态错误检查已通过。
+4. 本轮对 master pending 并发修复后的 `mb_master.c` 静态错误检查已通过。
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass -Force
@@ -166,7 +169,7 @@ idf.py build
 1. README 或正式接口文档中的 wrap 路由语义说明。
 2. `mbc_get_handler()` 返回 dispatcher 的行为说明。
 3. 重叠注册、默认 fallback 和 dispatcher 保留策略说明。
-4. slave 范围路由按请求起始地址匹配的行为说明。
+4. 单区间范围路由按请求完整区间匹配，以及 `0x17` fallback-only 的行为说明。
 5. router 自动回收触发条件与回收到纯 handler 状态的行为说明。
 
 ### 4.3 后续增强项
@@ -181,14 +184,14 @@ idf.py build
 
 以下问题来自当前已落地代码的静态审查，状态均为：**待解决**。
 
-1. 路由语义与接口命名存在偏差（待解决）。
-   当前 range 路由匹配主要基于请求起始地址，尚未覆盖“请求完整区间必须落在注册范围内”的语义；对 `0x17` 的双区间读写请求当前也未形成完整建模策略。
+1. 路由语义与接口命名存在偏差（部分解决，仍待后续完成）。
+   单区间 range 路由现已按“请求完整区间必须落在注册范围内”的语义匹配；但对 `0x17` 的双区间读写请求当前仍未形成完整建模策略，现阶段先显式降级为 fallback-only。
 
 2. router 生命周期不可逆（已完成代码改造，待运行验证）。
    已在内部 router 层接入空 bucket 自动回收逻辑；当前当功能码下无 fallback 且已无 range 子路由时，会自动卸载 dispatcher 并清理 bucket。后续仍需补运行验证与文档说明。
 
-3. master pending 路由状态并发保护不完整（待解决）。
-   pending target 的设置、清理与消费跨越不同执行路径，当前同步边界仍需进一步收口，以降低异常/超时/迟到响应场景下的状态竞争风险。
+3. master pending 路由状态并发保护不完整（已完成代码改造，待运行验证）。
+   已将 pending target 的设置、清理与消费统一收敛到同一把 `handler_descriptor.sema` 保护下；后续仍需补超时、迟到响应与异常响应场景的运行验证，评估是否还需要进一步引入 transaction 级绑定方案。
 
 建议优先级：1 和 2 为高优先级；3 为中优先级。
 
@@ -202,8 +205,9 @@ idf.py build
 2. 示例接入：已完成。
 3. 编译验证：已完成。
 4. 生命周期可逆化代码改造：已完成，待运行验证。
-5. 运行验证：未完成。
-6. 文档最终收口：进行中。
+5. pending 并发保护首轮修复：已完成，待运行验证。
+6. 运行验证：未完成。
+7. 文档最终收口：进行中。
 
 总体进度估算：**约 88% - 92%**。
 

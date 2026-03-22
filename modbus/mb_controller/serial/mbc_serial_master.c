@@ -161,6 +161,26 @@ static uint32_t mbc_serial_master_get_request_timeout_ms(void *ctx, uint32_t tim
     return effective_timeout_ms;
 }
 
+static uint16_t mbc_serial_master_get_route_reg_len(uint8_t command, uint16_t request_reg_len)
+{
+    switch (command) {
+#if MB_FUNC_WRITE_COIL_ENABLED
+    case MB_FUNC_WRITE_SINGLE_COIL:
+        return 1;
+#endif
+#if MB_FUNC_WRITE_HOLDING_ENABLED
+    case MB_FUNC_WRITE_REGISTER:
+        return 1;
+#endif
+#if MB_FUNC_READWRITE_HOLDING_ENABLED
+    case MB_FUNC_READWRITE_MULTIPLE_REGISTERS:
+        return 0;
+#endif
+    default:
+        return request_reg_len;
+    }
+}
+
 static esp_err_t mbc_serial_master_send_request_internal(void *ctx, mb_param_request_t *request, void *data_ptr, uint32_t timeout_ms)
 {
     mb_master_options_t *mbm_opts = MB_MASTER_GET_OPTS(ctx);
@@ -179,9 +199,10 @@ static esp_err_t mbc_serial_master_send_request_internal(void *ctx, mb_param_req
         uint8_t mb_command = request->command;
         uint16_t mb_offset = request->reg_start;
         uint16_t mb_size = request->reg_size;
+        uint16_t route_reg_len = mbc_serial_master_get_route_reg_len(mb_command, mb_size);
         mb_fn_handler_fp route_handler = NULL;
         mb_err_enum_t route_status = mbm_router_select_on_request(mbm_controller_iface->mb_base,
-                                                                  mb_command, mb_offset,
+                                      mb_command, mb_offset, route_reg_len,
                                                                   &route_handler);
 
         if ((route_status == MB_ENOERR) && route_handler) {
