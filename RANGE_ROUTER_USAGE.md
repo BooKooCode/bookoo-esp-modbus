@@ -26,6 +26,7 @@ esp_err_t mbc_unregister_handler_range(void *ctx, uint8_t func_code,
 5. `mbc_delete_handler()` 在启用范围路由后只清 fallback，不会删除范围子路由。
 6. `reg_len` 必须大于 0。
 7. 重叠范围会被拒绝，返回 `ESP_ERR_INVALID_ARG`。
+8. `0x17` 不支持范围子路由注册；如需自定义处理，应继续使用 `mbc_set_handler()` 注册功能码级 handler。
 
 ---
 
@@ -63,6 +64,7 @@ mbc_register_handler_range(master_handle, fc, 10, 1, my_range1_handler);
 2. 如果你只关心命中范围时走子路由，不需要 fallback，那只注册 range 即可。
 3. 如果你希望未命中范围时继续走默认处理器，才需要额外调用 `mbc_set_handler()`。
 4. 如果同一个功能码既注册了 fallback，又注册了 range，那么命中范围时不会再执行 fallback；只有未命中范围时才会执行 fallback。
+5. `0x17` 不能调用 `mbc_register_handler_range()`；该功能码只支持功能码级 handler。
 
 ### 2.2 `reg_start` 该填什么
 
@@ -73,7 +75,7 @@ Master 侧匹配的是“你发请求时使用的完整访问区间”。
 1. 如果你走 `mbc_master_send_request()` / `mbc_master_send_request_with_timeout()`，就按 `request.reg_start + request.reg_size` 来匹配。
 2. 如果你走参数表接口，通常就是参数描述表里的 `mb_reg_start`，该值是 0-based。
 3. 对单寄存器/单线圈写，内部会按长度 1 参与匹配。
-4. 对 `0x17`，当前第一阶段不会参与 range routing，而是直接走 fallback handler。
+4. `0x17` 不支持范围子路由；如需自定义处理，应继续通过 `mbc_set_handler()` 注册功能码级 handler。
 
 ### 2.3 最小示例位置
 
@@ -116,6 +118,7 @@ mbc_register_handler_range(slave_handle, fc, range1_start, range1_len,
 2. 如果你只关心命中范围时走子路由，不需要 fallback，那只注册 range 即可。
 3. 如果你希望未命中范围时继续走默认处理器，才需要额外调用 `mbc_set_handler()`。
 4. 如果同一个功能码既注册了 fallback，又注册了 range，那么命中范围时不会再执行 fallback；只有未命中范围时才会执行 fallback。
+5. `0x17` 不能调用 `mbc_register_handler_range()`；该功能码只支持功能码级 handler。
 
 ### 3.2 `reg_start` 该填什么
 
@@ -164,7 +167,7 @@ mbc_register_handler_range(slave_handle, fc, range1_start, range1_len,
 4. 删除 fallback 也不会影响已注册的范围子路由
 5. 只注册 range 也能工作；`mbc_set_handler()` 不是前置必需步骤
 6. 同一功能码下若同时存在 range 和 fallback，则范围命中优先，fallback 只在未命中时触发
-7. `0x17` 当前不参与 range routing，只走 fallback
+7. `0x17` 不支持 range routing，也不支持范围子路由注册；只能走功能码级 handler
 
 ---
 
@@ -178,4 +181,4 @@ mbc_register_handler_range(slave_handle, fc, range1_start, range1_len,
 6. 范围不能重叠
 7. `mbc_set_handler()` 不是必须，只有需要 fallback 时才注册
 8. 命中范围时只走范围 handler，不再走 fallback
-9. `0x17` 当前先走 fallback，不参加范围命中
+9. `0x17` 不支持范围子路由，继续使用功能码级 handler

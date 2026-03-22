@@ -174,6 +174,7 @@ static uint16_t mbc_serial_master_get_route_reg_len(uint8_t command, uint16_t re
 #endif
 #if MB_FUNC_READWRITE_HOLDING_ENABLED
     case MB_FUNC_READWRITE_MULTIPLE_REGISTERS:
+    // 0x17 does not support range subroutes and must stay on the function-code-level handler path.
         return 0;
 #endif
     default:

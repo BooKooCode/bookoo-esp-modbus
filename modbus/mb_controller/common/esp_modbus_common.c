@@ -101,6 +101,8 @@ esp_err_t mbc_register_handler_range(void *ctx, uint8_t func_code, uint16_t reg_
                        "Incorrect arguments for the function.");
     MB_RETURN_ON_FALSE((reg_len > 0), ESP_ERR_INVALID_ARG, TAG,
                        "Range registration requires reg_len > 0.");
+    MB_RETURN_ON_FALSE((func_code != MB_FUNC_READWRITE_MULTIPLE_REGISTERS), ESP_ERR_NOT_SUPPORTED, TAG,
+                       "Function code 0x17 does not support range subroutes.");
     mb_controller_common_t *mb_controller = (mb_controller_common_t *)(ctx);
     mb_base_t *mb_obj = (mb_base_t *)mb_controller->mb_base;
     MB_RETURN_ON_FALSE(mb_obj, ESP_ERR_INVALID_STATE, TAG,

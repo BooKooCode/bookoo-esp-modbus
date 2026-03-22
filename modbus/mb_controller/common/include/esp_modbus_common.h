@@ -269,8 +269,8 @@ esp_err_t mbc_get_handler_count(void *ctx, uint16_t *count);
  *        single-range access interval is fully contained within the registered range. An internal
  *        dispatcher is installed automatically for the func_code on first registration. The default
  *        fallback handler remains the one configured through mbc_set_handler(). Supported in both
- *        master and slave mode for single-range request function codes; 0x17 currently falls back
- *        to the default handler path and does not participate in range routing.
+ *        master and slave mode for single-range request function codes. Function code 0x17 is not
+ *        supported by the range subroute API and must continue to use the function-code-level handler.
  *
  * @param[in] ctx    context pointer to the controller object
  * @param[in] func_code  Modbus function code (1-127)
@@ -281,6 +281,7 @@ esp_err_t mbc_get_handler_count(void *ctx, uint16_t *count);
  * @return
  *     - esp_err_t ESP_OK               - handler registered successfully
  *     - esp_err_t ESP_ERR_INVALID_ARG  - invalid argument or overlapping range
+ *     - esp_err_t ESP_ERR_NOT_SUPPORTED - func_code is 0x17, which does not support range subroutes
  *     - esp_err_t ESP_ERR_INVALID_STATE - controller not correctly initialized
  */
 esp_err_t mbc_register_handler_range(void *ctx, uint8_t func_code, uint16_t reg_start,

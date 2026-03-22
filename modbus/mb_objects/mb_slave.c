@@ -108,6 +108,7 @@ static bool mbs_router_parse_request_range(uint8_t func_code,
 
 #if MB_FUNC_READWRITE_HOLDING_ENABLED
     case MB_FUNC_READWRITE_MULTIPLE_REGISTERS:
+    // 0x17 is excluded from range subroutes and must use the function-code-level handler.
         return false;
 #endif
 

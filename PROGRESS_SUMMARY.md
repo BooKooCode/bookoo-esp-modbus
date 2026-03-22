@@ -82,7 +82,7 @@ mbs_fn_router_dispatcher()
 3. `mbc_delete_handler()` 在 wrap 已启用时只清空 fallback，不删除范围子路由。
 4. `mbc_register_handler_range()` 要求 `reg_len > 0`，不再接受 `reg_len == 0` 作为通配 fallback 表达方式。
 5. 单区间 range 路由当前按“请求完整区间必须被已注册范围完整包含”的规则匹配；对标准寄存器/线圈访问功能码可直接生效。
-6. `0x17` 当前不参与 range 路由选择，统一回落到 default fallback handler。
+6. `0x17` 明确不支持范围子路由注册与范围路由选择，需继续使用功能码级 default handler。
 7. 对同一功能码，若所有 range 已注销且 fallback 为空，router 会自动回收到未启用状态。
 
 ### 2.4 示例与编译
@@ -169,7 +169,7 @@ idf.py build
 1. README 或正式接口文档中的 wrap 路由语义说明。
 2. `mbc_get_handler()` 返回 dispatcher 的行为说明。
 3. 重叠注册、默认 fallback 和 dispatcher 保留策略说明。
-4. 单区间范围路由按请求完整区间匹配，以及 `0x17` fallback-only 的行为说明。
+4. 单区间范围路由按请求完整区间匹配，以及 `0x17` 不支持范围子路由的行为说明。
 5. router 自动回收触发条件与回收到纯 handler 状态的行为说明。
 
 ### 4.3 后续增强项
@@ -184,8 +184,8 @@ idf.py build
 
 以下问题来自当前已落地代码的静态审查，状态均为：**待解决**。
 
-1. 路由语义与接口命名存在偏差（部分解决，仍待后续完成）。
-   单区间 range 路由现已按“请求完整区间必须落在注册范围内”的语义匹配；但对 `0x17` 的双区间读写请求当前仍未形成完整建模策略，现阶段先显式降级为 fallback-only。
+1. 路由语义与接口命名存在偏差（当前阶段边界已收敛）。
+   单区间 range 路由现已按“请求完整区间必须落在注册范围内”的语义匹配；`0x17` 已明确排除在范围子路由模型之外，当前定义上不支持范围子路由注册，需继续使用功能码级 handler。
 
 2. router 生命周期不可逆（已完成代码改造，待运行验证）。
    已在内部 router 层接入空 bucket 自动回收逻辑；当前当功能码下无 fallback 且已无 range 子路由时，会自动卸载 dispatcher 并清理 bucket。后续仍需补运行验证与文档说明。
