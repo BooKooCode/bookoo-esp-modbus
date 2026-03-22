@@ -263,6 +263,49 @@ esp_err_t mbc_delete_handler(void *ctx, uint8_t func_code);
 */
 esp_err_t mbc_get_handler_count(void *ctx, uint16_t *count);
 
+/**
+ * @brief Register a handler for requests matching func_code AND a register address range.
+ *        The range route is evaluated on request dispatch. A request matches only when its full
+ *        single-range access interval is fully contained within the registered range. An internal
+ *        dispatcher is installed automatically for the func_code on first registration. The default
+ *        fallback handler remains the one configured through mbc_set_handler(). Supported in master
+ *        mode for single-range requests described by the caller, and in slave mode only for standard
+ *        single-range function codes that can be parsed from the incoming request PDU. Function code
+ *        0x17 is not supported by the range subroute API and must continue to use the function-code-level
+ *        handler.
+ *
+ * @param[in] ctx    context pointer to the controller object
+ * @param[in] func_code  Modbus function code (1-127)
+ * @param[in] reg_start  First register address of the range (inclusive)
+ * @param[in] reg_len    Number of registers in the range (> 0)
+ * @param[in] handler    Function pointer to the handler
+ *
+ * @return
+ *     - esp_err_t ESP_OK               - handler registered successfully
+ *     - esp_err_t ESP_ERR_INVALID_ARG  - invalid argument or overlapping range
+ *     - esp_err_t ESP_ERR_NOT_SUPPORTED - func_code is 0x17, or slave mode func_code does not support range subroutes
+ *     - esp_err_t ESP_ERR_INVALID_STATE - controller not correctly initialized
+ */
+esp_err_t mbc_register_handler_range(void *ctx, uint8_t func_code, uint16_t reg_start,
+                                     uint16_t reg_len, mb_fn_handler_fp handler);
+
+/**
+ * @brief Unregister a range-specific handler identified by (func_code, reg_start, reg_len).
+ *        Supported in both master and slave mode.
+ *
+ * @param[in] ctx       context pointer to the controller object
+ * @param[in] func_code Modbus function code (1-127)
+ * @param[in] reg_start First register address of the range that was registered
+ * @param[in] reg_len   Number of registers in the range that was registered
+ *
+ * @return
+ *     - esp_err_t ESP_OK               - handler unregistered successfully
+ *     - esp_err_t ESP_ERR_INVALID_ARG  - invalid argument
+ *     - esp_err_t ESP_ERR_INVALID_STATE - controller not correctly initialized or handler not found
+ */
+esp_err_t mbc_unregister_handler_range(void *ctx, uint8_t func_code, uint16_t reg_start,
+                                       uint16_t reg_len);
+
 #ifdef __cplusplus
 }
 #endif

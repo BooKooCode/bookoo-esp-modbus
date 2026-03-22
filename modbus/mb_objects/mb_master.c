@@ -8,6 +8,7 @@
 #include "mb_proto.h"
 #include "mb_func.h"
 #include "mb_master.h"
+#include "mb_wrap_router.h"
 #include "transport_common.h"
 #include "port_common.h"
 #include "ascii_transport.h"
@@ -39,6 +40,7 @@ typedef struct {
     uint8_t master_dst_addr;
     uint64_t curr_trans_id;
     handler_descriptor_t handler_descriptor;
+    mb_wrap_router_state_t router_state;
 } mbm_object_t;
 
 mb_err_enum_t mbm_tcp_create(mb_tcp_opts_t *tcp_opts, void **in_out_obj);
@@ -53,13 +55,18 @@ static uint16_t mbm_get_pdu_send_length(mb_base_t *inst);
 static void mbm_set_dest_addr(mb_base_t *inst, uint8_t dest_addr);
 static uint8_t mbm_get_dest_addr(mb_base_t *inst);
 static void mbm_get_pdu_send_buf(mb_base_t *inst, uint8_t **buf);
+static mb_exception_t mbm_fn_router_dispatcher(void *inst_ptr, uint8_t *buf, uint16_t *len);
 
 mb_err_enum_t mbm_set_handler(mb_base_t *inst, uint8_t func_code, mb_fn_handler_fp handler)
 {
     mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
     mb_err_enum_t status = MB_EILLSTATE;
     SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
-        status = mb_set_handler(&mbm_obj->handler_descriptor, func_code, handler);
+        status = mb_wrap_router_set_default_locked(&mbm_obj->router_state,
+                                                   &mbm_obj->handler_descriptor,
+                                                   func_code,
+                                                   handler,
+                                                   mbm_fn_router_dispatcher);
     }
     return status;
 }
@@ -71,7 +78,11 @@ mb_err_enum_t mbm_get_handler(mb_base_t *inst, uint8_t func_code, mb_fn_handler_
     mb_err_enum_t status = MB_EILLSTATE;
     if (handler) {
         SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
-            status = mb_get_handler(&mbm_obj->handler_descriptor, func_code, handler);
+            status = mb_wrap_router_get_entry_handler_locked(&mbm_obj->router_state,
+                                                             &mbm_obj->handler_descriptor,
+                                                             func_code,
+                                                             mbm_fn_router_dispatcher,
+                                                             handler);
         }
     }
     return status;
@@ -82,7 +93,10 @@ mb_err_enum_t mbm_delete_handler(mb_base_t *inst, uint8_t func_code)
     mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
     mb_err_enum_t status = MB_EILLSTATE;
     SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
-        status = mb_delete_handler(&mbm_obj->handler_descriptor, func_code);
+        status = mb_wrap_router_clear_default_locked(&mbm_obj->router_state,
+                                                     &mbm_obj->handler_descriptor,
+                                                     func_code,
+                                                     mbm_fn_router_dispatcher);
     }
     return status;
 }
@@ -97,10 +111,95 @@ mb_err_enum_t mbm_get_handler_count(mb_base_t *inst, uint16_t *count)
     return MB_ENOERR;
 }
 
+mb_err_enum_t mbm_router_register_range(mb_base_t *inst, uint8_t func_code,
+                                        uint16_t reg_start, uint16_t reg_len, mb_fn_handler_fp handler)
+{
+    mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
+    mb_err_enum_t status = MB_EILLSTATE;
+    SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
+        status = mb_wrap_router_register_range_locked(&mbm_obj->router_state,
+                                                      &mbm_obj->handler_descriptor,
+                                                      func_code,
+                                                      reg_start,
+                                                      reg_len,
+                                                      handler,
+                                                      mbm_fn_router_dispatcher);
+    }
+    return status;
+}
+
+mb_err_enum_t mbm_router_unregister_range(mb_base_t *inst, uint8_t func_code,
+                                          uint16_t reg_start, uint16_t reg_len)
+{
+    mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
+    mb_err_enum_t status = MB_EILLSTATE;
+    SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
+        status = mb_wrap_router_unregister_range_locked(&mbm_obj->router_state,
+                                                        &mbm_obj->handler_descriptor,
+                                                        func_code,
+                                                        reg_start,
+                                                        reg_len,
+                                                        mbm_fn_router_dispatcher);
+    }
+    return status;
+}
+
+mb_err_enum_t mbm_router_select_on_request(mb_base_t *inst, uint8_t func_code,
+                                           uint16_t reg_start, uint16_t reg_len,
+                                           mb_fn_handler_fp *selected_handler)
+{
+    mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
+    mb_err_enum_t status = MB_EILLSTATE;
+    SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
+        status = mb_wrap_router_select_locked(&mbm_obj->router_state,
+                                              &mbm_obj->handler_descriptor,
+                                              func_code,
+                                              reg_start,
+                                              reg_len,
+                                              selected_handler);
+    }
+    return status;
+}
+
+void mbm_router_set_pending_target(mb_base_t *inst, uint8_t func_code, mb_fn_handler_fp handler)
+{
+    mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
+    SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
+        mb_wrap_router_set_pending(&mbm_obj->router_state, func_code, handler);
+    }
+}
+
+void mbm_router_clear_pending_target(mb_base_t *inst)
+{
+    mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
+    SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
+        mb_wrap_router_clear_pending(&mbm_obj->router_state);
+    }
+}
+
+static mb_exception_t mbm_fn_router_dispatcher(void *inst_ptr, uint8_t *buf, uint16_t *len)
+{
+    mb_base_t *inst = (mb_base_t *)inst_ptr;
+    mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
+    uint8_t func_code = buf ? buf[MB_PDU_FUNC_OFF] : 0;
+    mb_fn_handler_fp handler = NULL;
+
+    if (!func_code || !buf) {
+        return MB_EX_ILLEGAL_FUNCTION;
+    }
+
+    SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
+        handler = mb_wrap_router_resolve_dispatch_target_locked(&mbm_obj->router_state, func_code);
+    }
+
+    return handler ? handler(inst, buf, len) : MB_EX_ILLEGAL_FUNCTION;
+}
+
 static mb_exception_t mbm_check_invoke_handler(mb_base_t *inst, uint8_t func_code, uint8_t *buf, uint16_t *len)
 {
     mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
     mb_exception_t exception = MB_EX_ILLEGAL_FUNCTION;
+    mb_fn_handler_fp handler = NULL;
     if (!func_code || !buf) {
         return MB_EX_ILLEGAL_FUNCTION;
     }
@@ -109,11 +208,11 @@ static mb_exception_t mbm_check_invoke_handler(mb_base_t *inst, uint8_t func_cod
         return exception;
     }
     SEMA_SECTION(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS) {
-        mb_fn_handler_fp handler = NULL;
         mb_err_enum_t status = mb_get_handler(&mbm_obj->handler_descriptor, func_code, &handler);
-        if ((status == MB_ENOERR) && handler) {
-            exception = handler(inst, buf, len);
-        }
+        (void)status;
+    }
+    if (handler) {
+        exception = handler(inst, buf, len);
     }
     return exception;
 }
@@ -123,6 +222,7 @@ static mb_err_enum_t mbm_register_default_handlers(mb_base_t *inst)
     mbm_object_t *mbm_obj = MB_GET_OBJ_CTX(inst, mbm_object_t, base);
     mb_err_enum_t err = MB_EILLSTATE;
     LIST_INIT(&mbm_obj->handler_descriptor.head);
+    mb_wrap_router_init(&mbm_obj->router_state);
     mbm_obj->handler_descriptor.sema = xSemaphoreCreateBinary();
     (void)xSemaphoreGive(mbm_obj->handler_descriptor.sema);
     mbm_obj->handler_descriptor.instance = inst->descr.parent;
@@ -175,6 +275,7 @@ static mb_err_enum_t mbm_unregister_handlers(mb_base_t *inst)
     (void)xSemaphoreTake(mbm_obj->handler_descriptor.sema, MB_HANDLER_UNLOCK_TICKS);
     ESP_LOGD(TAG, "Close %s command handlers.", mbm_obj->base.descr.parent_name);
     (void)mb_delete_command_handlers(&mbm_obj->handler_descriptor);
+    mb_wrap_router_destroy(&mbm_obj->router_state);
     mbm_obj->handler_descriptor.instance = NULL;
     (void)xSemaphoreGive(mbm_obj->handler_descriptor.sema);
     vSemaphoreDelete(mbm_obj->handler_descriptor.sema);

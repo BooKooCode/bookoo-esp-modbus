@@ -23,6 +23,7 @@
 #include "mb_common.h"              // for mb types definition
 #include "mb_config.h"
 #include "mb_proto.h"
+#include "mb_wrap_router.h"         // for wrap-router request selection and pending target handling
 
 #if (CONFIG_FMB_COMM_MODE_ASCII_EN || CONFIG_FMB_COMM_MODE_RTU_EN)
 
@@ -150,7 +151,38 @@ static esp_err_t mbc_serial_master_set_descriptor(void *ctx, const mb_parameter_
 }
 
 // Send custom Modbus request defined as mb_param_request_t structure
-static esp_err_t mbc_serial_master_send_request(void *ctx, mb_param_request_t *request, void *data_ptr)
+static uint32_t mbc_serial_master_get_request_timeout_ms(void *ctx, uint32_t timeout_ms)
+{
+    mb_master_options_t *mbm_opts = MB_MASTER_GET_OPTS(ctx);
+    uint32_t effective_timeout_ms = timeout_ms ? timeout_ms : mbm_opts->comm_opts.ser_opts.response_tout_ms;
+    if (!effective_timeout_ms) {
+        effective_timeout_ms = MB_MASTER_TIMEOUT_MS_RESPOND;
+    }
+    return effective_timeout_ms;
+}
+
+static uint16_t mbc_serial_master_get_route_reg_len(uint8_t command, uint16_t request_reg_len)
+{
+    switch (command) {
+#if MB_FUNC_WRITE_COIL_ENABLED
+    case MB_FUNC_WRITE_SINGLE_COIL:
+        return 1;
+#endif
+#if MB_FUNC_WRITE_HOLDING_ENABLED
+    case MB_FUNC_WRITE_REGISTER:
+        return 1;
+#endif
+#if MB_FUNC_READWRITE_HOLDING_ENABLED
+    case MB_FUNC_READWRITE_MULTIPLE_REGISTERS:
+    // 0x17 does not support range subroutes and must stay on the function-code-level handler path.
+        return 0;
+#endif
+    default:
+        return request_reg_len;
+    }
+}
+
+static esp_err_t mbc_serial_master_send_request_internal(void *ctx, mb_param_request_t *request, void *data_ptr, uint32_t timeout_ms)
 {
     mb_master_options_t *mbm_opts = MB_MASTER_GET_OPTS(ctx);
     mbm_controller_iface_t *mbm_controller_iface = MB_MASTER_GET_IFACE(ctx);
@@ -158,71 +190,89 @@ static esp_err_t mbc_serial_master_send_request(void *ctx, mb_param_request_t *r
     MB_RETURN_ON_FALSE((data_ptr), ESP_ERR_INVALID_ARG, TAG, "mb incorrect data pointer.");
 
     mb_err_enum_t mb_error = MB_EBUSY;
+    uint32_t effective_timeout_ms = mbc_serial_master_get_request_timeout_ms(ctx, timeout_ms);
+    TickType_t timeout_ticks = pdMS_TO_TICKS(effective_timeout_ms);
+    BaseType_t semaphore_taken = pdFALSE;
 
-    if (xSemaphoreTake(mbm_opts->mbm_sema, pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS)) == pdTRUE) {
+    semaphore_taken = xSemaphoreTake(mbm_opts->mbm_sema, timeout_ticks);
+    if (semaphore_taken == pdTRUE) {
         uint8_t mb_slave_addr = request->slave_addr;
         uint8_t mb_command = request->command;
         uint16_t mb_offset = request->reg_start;
         uint16_t mb_size = request->reg_size;
+        uint16_t route_reg_len = mbc_serial_master_get_route_reg_len(mb_command, mb_size);
+        mb_fn_handler_fp route_handler = NULL;
+        mb_err_enum_t route_status = mbm_router_select_on_request(mbm_controller_iface->mb_base,
+                                      mb_command, mb_offset, route_reg_len,
+                                                                  &route_handler);
+
+        if ((route_status == MB_ENOERR) && route_handler) {
+            mbm_router_set_pending_target(mbm_controller_iface->mb_base, mb_command, route_handler);
+        }
+
+        mb_port_timer_set_response_time(mbm_controller_iface->mb_base->port_obj, effective_timeout_ms);
 
         // Set the buffer for callback function processing of received data
         mbm_opts->reg_buffer_ptr = (uint8_t *)data_ptr;
         mbm_opts->reg_buffer_size = mb_size;
 
-        // Calls appropriate request function to send request and waits response
-        switch (mb_command) {
+        if (route_status != MB_ENOERR) {
+            ESP_LOGE(TAG, "%s: Incorrect or unsupported function in request (%u), error = (0x%x)",
+                     __FUNCTION__, mb_command, (int)route_status);
+            mb_error = MB_ENOREG;
+        } else switch (mb_command) {
 #if MB_FUNC_OTHER_REP_SLAVEID_ENABLED
         case MB_FUNC_OTHER_REPORT_SLAVEID:
-            mb_error = mbm_rq_report_slave_id(mbm_controller_iface->mb_base, mb_slave_addr, pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
+            mb_error = mbm_rq_report_slave_id(mbm_controller_iface->mb_base, mb_slave_addr, timeout_ticks);
             break;
 #endif
 
 #if MB_FUNC_READ_COILS_ENABLED
         case MB_FUNC_READ_COILS:
             mb_error = mbm_rq_read_coils(mbm_controller_iface->mb_base, mb_slave_addr, mb_offset,
-                                         mb_size, pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
+                                         mb_size, timeout_ticks);
             break;
 #endif
 
 #if MB_FUNC_WRITE_COIL_ENABLED
         case MB_FUNC_WRITE_SINGLE_COIL:
             mb_error = mbm_rq_write_coil(mbm_controller_iface->mb_base, mb_slave_addr, mb_offset,
-                                         *(uint16_t *)data_ptr, pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
+                                         *(uint16_t *)data_ptr, timeout_ticks);
             break;
 #endif
 
 #if MB_FUNC_WRITE_MULTIPLE_COILS_ENABLED
         case MB_FUNC_WRITE_MULTIPLE_COILS:
             mb_error = mbm_rq_write_multi_coils(mbm_controller_iface->mb_base, mb_slave_addr, mb_offset,
-                                                mb_size, (uint8_t *)data_ptr, pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
+                                                mb_size, (uint8_t *)data_ptr, timeout_ticks);
             break;
 #endif
 
 #if MB_FUNC_READ_DISCRETE_INPUTS_ENABLED
         case MB_FUNC_READ_DISCRETE_INPUTS:
             mb_error = mbm_rq_read_discrete_inputs(mbm_controller_iface->mb_base, mb_slave_addr, mb_offset,
-                                                   mb_size, pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
+                                                   mb_size, timeout_ticks);
             break;
 #endif
 
 #if MB_FUNC_READ_HOLDING_ENABLED
         case MB_FUNC_READ_HOLDING_REGISTER:
             mb_error = mbm_rq_read_holding_reg(mbm_controller_iface->mb_base, mb_slave_addr, mb_offset,
-                                               mb_size, pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
+                                               mb_size, timeout_ticks);
             break;
 #endif
 
 #if MB_FUNC_WRITE_HOLDING_ENABLED
         case MB_FUNC_WRITE_REGISTER:
             mb_error = mbm_rq_write_holding_reg(mbm_controller_iface->mb_base, mb_slave_addr, mb_offset,
-                                                *(uint16_t *)data_ptr, pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
+                                                *(uint16_t *)data_ptr, timeout_ticks);
             break;
 #endif
 
 #if MB_FUNC_WRITE_MULTIPLE_HOLDING_ENABLED
         case MB_FUNC_WRITE_MULTIPLE_REGISTERS:
             mb_error = mbm_rq_write_multi_holding_reg(mbm_controller_iface->mb_base, mb_slave_addr,
-                       mb_offset, mb_size, (uint16_t *)data_ptr, pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
+                       mb_offset, mb_size, (uint16_t *)data_ptr, timeout_ticks);
             break;
 #endif
 
@@ -230,40 +280,44 @@ static esp_err_t mbc_serial_master_send_request(void *ctx, mb_param_request_t *r
         case MB_FUNC_READWRITE_MULTIPLE_REGISTERS:
             mb_error = mbm_rq_rw_multi_holding_reg(mbm_controller_iface->mb_base, mb_slave_addr, mb_offset,
                                                    mb_size, (uint16_t *)data_ptr,
-                                                   mb_offset, mb_size, pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
+                                                   mb_offset, mb_size, timeout_ticks);
             break;
 #endif
 
 #if MB_FUNC_READ_INPUT_ENABLED
         case MB_FUNC_READ_INPUT_REGISTER:
             mb_error = mbm_rq_read_inp_reg(mbm_controller_iface->mb_base, mb_slave_addr, mb_offset,
-                                           mb_size, pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
+                                           mb_size, timeout_ticks);
             break;
 #endif
         default:
-            mb_fn_handler_fp handler = NULL;
-            // check registered function handler
-            mb_error = mbm_get_handler(mbm_controller_iface->mb_base, mb_command, &handler);
-            if (mb_error == MB_ENOERR) {
-                // send the request for custom command
-                mb_error = mbm_rq_custom(mbm_controller_iface->mb_base, mb_slave_addr, mb_command,
-                                         data_ptr, (uint16_t)(mb_size << 1),
-                                         pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
-                ESP_LOGD(TAG, "%s: Send custom request (%u)", __FUNCTION__, mb_command);
-            } else {
-                ESP_LOGE(TAG, "%s: Incorrect or unsupported function in request (%u), error = (0x%x)",
-                         __FUNCTION__, mb_command, (int)mb_error);
-                mb_error = MB_ENOREG;
-            }
+            mb_error = mbm_rq_custom(mbm_controller_iface->mb_base, mb_slave_addr, mb_command,
+                                     data_ptr, (uint16_t)(mb_size << 1),
+                                     timeout_ticks);
+            ESP_LOGD(TAG, "%s: Send custom request (%u)", __FUNCTION__, mb_command);
             break;
         }
+        mbm_router_clear_pending_target(mbm_controller_iface->mb_base);
     } else {
-        ESP_LOGD(TAG, "%s:MBC semaphore take fail.", __func__);
+        ESP_LOGD(TAG, "%s:MBC semaphore take timeout (%lu ms).", __func__, (unsigned long)effective_timeout_ms);
+        mb_error = MB_ETIMEDOUT;
     }
-    (void)xSemaphoreGive(mbm_opts->mbm_sema);
+    if (semaphore_taken == pdTRUE) {
+        (void)xSemaphoreGive(mbm_opts->mbm_sema);
+    }
 
     // Propagate the Modbus errors to higher level
     return MB_ERR_TO_ESP_ERR(mb_error);
+}
+
+static esp_err_t mbc_serial_master_send_request(void *ctx, mb_param_request_t *request, void *data_ptr)
+{
+    return mbc_serial_master_send_request_internal(ctx, request, data_ptr, 0);
+}
+
+static esp_err_t mbc_serial_master_send_request_with_timeout(void *ctx, mb_param_request_t *request, void *data_ptr, uint32_t timeout_ms)
+{
+    return mbc_serial_master_send_request_internal(ctx, request, data_ptr, timeout_ms);
 }
 
 static esp_err_t mbc_serial_master_get_cid_info(void *ctx, uint16_t cid, const mb_parameter_descriptor_t **param_buffer)
@@ -314,30 +368,38 @@ static esp_err_t mbc_serial_master_set_request(void *ctx, uint16_t cid, mb_param
     return error;
 }
 
-// Get parameter data for corresponding characteristic
-static esp_err_t mbc_serial_master_get_parameter(void *ctx, uint16_t cid, uint8_t *value, uint8_t *type)
+static esp_err_t mbc_serial_master_get_parameter_internal(void *ctx, uint16_t cid, uint8_t uid,
+        bool use_uid, uint8_t *value_ptr, uint8_t *type, uint32_t timeout_ms)
 {
     MB_RETURN_ON_FALSE((type), ESP_ERR_INVALID_ARG, TAG, "type pointer is incorrect.");
-    MB_RETURN_ON_FALSE((value), ESP_ERR_INVALID_ARG, TAG, "value pointer is incorrect.");
+    MB_RETURN_ON_FALSE((value_ptr), ESP_ERR_INVALID_ARG, TAG, "value pointer is incorrect.");
     mbm_controller_iface_t *mbm_controller_iface = MB_MASTER_GET_IFACE(ctx);
     esp_err_t error = ESP_ERR_INVALID_RESPONSE;
-    mb_param_request_t request ;
+    mb_param_request_t request;
     mb_parameter_descriptor_t reg_info = { 0 };
     uint8_t *data_ptr = NULL;
 
     error = mbc_serial_master_set_request(ctx, cid, MB_PARAM_READ, &request, &reg_info);
-    if ((error == ESP_OK) && (cid == reg_info.cid) && (request.slave_addr != MB_SLAVE_ADDR_PLACEHOLDER)) {
+    if ((error == ESP_OK) && (cid == reg_info.cid)
+            && (use_uid || (request.slave_addr != MB_SLAVE_ADDR_PLACEHOLDER))) {
+        if (use_uid) {
+            if (request.slave_addr != MB_SLAVE_ADDR_PLACEHOLDER) {
+                ESP_LOGD(TAG, "%s: override uid %d = %d for cid(%u)",
+                         __FUNCTION__, (int)request.slave_addr, (int)uid, (unsigned)reg_info.cid);
+            }
+            request.slave_addr = uid;
+        }
         MB_MASTER_ASSERT(xPortGetFreeHeapSize() > (reg_info.mb_size << 1));
         // alloc buffer to store parameter data
         data_ptr = calloc(1, (reg_info.mb_size << 1));
         if (!data_ptr) {
             return ESP_ERR_INVALID_STATE;
         }
-        error = mbc_serial_master_send_request(ctx, &request, data_ptr);
+        error = mbc_serial_master_send_request_internal(ctx, &request, data_ptr, timeout_ms);
         if (error == ESP_OK) {
             // If data pointer is NULL then we don't need to set value (it is still in the cache of cid)
-            if (value) {
-                error = mbc_master_set_param_data((void *)value, (void *)data_ptr,
+            if (value_ptr) {
+                error = mbc_master_set_param_data((void *)value_ptr, (void *)data_ptr,
                                                   reg_info.param_type, reg_info.param_size);
                 if (error != ESP_OK) {
                     ESP_LOGE(TAG, "%p fail to set parameter data.", mbm_controller_iface);
@@ -361,122 +423,49 @@ static esp_err_t mbc_serial_master_get_parameter(void *ctx, uint16_t cid, uint8_
     }
     return error;
 }
+static esp_err_t mbc_serial_master_get_parameter(void *ctx, uint16_t cid, uint8_t *value, uint8_t *type)
+{
+    return mbc_serial_master_get_parameter_internal(ctx, cid, 0, false, value, type, 0);
+}
+
+static esp_err_t mbc_serial_master_get_parameter_with_timeout(void *ctx, uint16_t cid, uint8_t *value, uint8_t *type, uint32_t timeout_ms)
+{
+    return mbc_serial_master_get_parameter_internal(ctx, cid, 0, false, value, type, timeout_ms);
+}
+
 // Get parameter data for corresponding characteristic
 static esp_err_t mbc_serial_master_get_parameter_with(void *ctx, uint16_t cid, uint8_t uid,
         uint8_t *value_ptr, uint8_t *type)
 {
-    MB_RETURN_ON_FALSE((type), ESP_ERR_INVALID_ARG, TAG, "type pointer is incorrect.");
-    MB_RETURN_ON_FALSE((value_ptr), ESP_ERR_INVALID_ARG, TAG, "value pointer is incorrect.");
-    esp_err_t error = ESP_ERR_INVALID_RESPONSE;
-    mb_param_request_t request;
-    mb_parameter_descriptor_t reg_info = {0};
-    uint8_t *data_ptr = NULL;
-
-    error = mbc_serial_master_set_request(ctx, cid, MB_PARAM_READ, &request, &reg_info);
-    if ((error == ESP_OK) && (cid == reg_info.cid)) {
-        if (request.slave_addr != MB_SLAVE_ADDR_PLACEHOLDER) {
-            ESP_LOGD(TAG, "%s: override uid %d = %d for cid(%u)",
-                     __FUNCTION__, (int)request.slave_addr, (int)uid, (unsigned)reg_info.cid);
-        }
-        request.slave_addr = uid; // override the UID
-        MB_MASTER_ASSERT(xPortGetFreeHeapSize() > (reg_info.mb_size << 1));
-        // alloc buffer to store parameter data
-        data_ptr = calloc(1, (reg_info.mb_size << 1));
-        if (!data_ptr) {
-            return ESP_ERR_INVALID_STATE;
-        }
-        // Send request to read characteristic data
-        error = mbc_serial_master_send_request(ctx, &request, data_ptr);
-        if (error == ESP_OK) {
-            // If data pointer is NULL then we don't need to set value (it is still in the cache of cid)
-            if (value_ptr) {
-                error = mbc_master_set_param_data((void *)value_ptr, (void *)data_ptr,
-                                                  reg_info.param_type, reg_info.param_size);
-                if (error != ESP_OK) {
-                    ESP_LOGE(TAG, "fail to set parameter data.");
-                    error = ESP_ERR_INVALID_STATE;
-                } else {
-                    ESP_LOGD(TAG, "%s: Good response for get cid(%u) = %s",
-                             __FUNCTION__, (unsigned)reg_info.cid, (char *)esp_err_to_name(error));
-                }
-            }
-        } else {
-            ESP_LOGD(TAG, "%s: Bad response to get cid(%u) = %s",
-                     __FUNCTION__, (unsigned)reg_info.cid, (char *)esp_err_to_name(error));
-        }
-        free(data_ptr);
-        // Set the type of parameter found in the table
-        *type = reg_info.param_type;
-    } else {
-        ESP_LOGE(TAG, "%s: The cid(%u) not found in the data dictionary.",
-                 __FUNCTION__, (unsigned)reg_info.cid);
-        error = ESP_ERR_INVALID_ARG;
-    }
-    return error;
+    return mbc_serial_master_get_parameter_internal(ctx, cid, uid, true, value_ptr, type, 0);
 }
 
-// Set parameter value for characteristic selected by cid
-static esp_err_t mbc_serial_master_set_parameter(void *ctx, uint16_t cid, uint8_t *value, uint8_t *type)
+static esp_err_t mbc_serial_master_get_parameter_with_uid_timeout(void *ctx, uint16_t cid, uint8_t uid,
+        uint8_t *value_ptr, uint8_t *type, uint32_t timeout_ms)
 {
-    MB_RETURN_ON_FALSE((value), ESP_ERR_INVALID_ARG, TAG, "value pointer is incorrect.");
+    return mbc_serial_master_get_parameter_internal(ctx, cid, uid, true, value_ptr, type, timeout_ms);
+}
+
+static esp_err_t mbc_serial_master_set_parameter_internal(void *ctx, uint16_t cid, uint8_t uid,
+        bool use_uid, uint8_t *value_ptr, uint8_t *type, uint32_t timeout_ms)
+{
+    MB_RETURN_ON_FALSE((value_ptr), ESP_ERR_INVALID_ARG, TAG, "value pointer is incorrect.");
     MB_RETURN_ON_FALSE((type), ESP_ERR_INVALID_ARG, TAG, "type pointer is incorrect.");
     esp_err_t error = ESP_ERR_INVALID_RESPONSE;
-    mb_param_request_t request ;
+    mb_param_request_t request;
     mb_parameter_descriptor_t reg_info = { 0 };
     uint8_t *data_ptr = NULL;
 
     error = mbc_serial_master_set_request(ctx, cid, MB_PARAM_WRITE, &request, &reg_info);
-    if ((error == ESP_OK) && (cid == reg_info.cid) && (request.slave_addr != MB_SLAVE_ADDR_PLACEHOLDER)) {
-        MB_MASTER_ASSERT(xPortGetFreeHeapSize() > (reg_info.mb_size << 1));
-        data_ptr = calloc(1, (reg_info.mb_size << 1)); // alloc parameter buffer
-        if (!data_ptr) {
-            return ESP_ERR_INVALID_STATE;
+    if ((error == ESP_OK) && (cid == reg_info.cid)
+            && (use_uid || (request.slave_addr != MB_SLAVE_ADDR_PLACEHOLDER))) {
+        if (use_uid) {
+            if (request.slave_addr != MB_SLAVE_ADDR_PLACEHOLDER) {
+                ESP_LOGD(TAG, "%s: override uid %d = %d for cid(%u)",
+                         __FUNCTION__, (int)request.slave_addr, (int)uid, (unsigned)reg_info.cid);
+            }
+            request.slave_addr = uid;
         }
-        // Transfer value of characteristic into parameter buffer
-        error = mbc_master_set_param_data((void *)data_ptr, (void *)value,
-                                          reg_info.param_type, reg_info.param_size);
-        if (error != ESP_OK) {
-            ESP_LOGE(TAG, "fail to set parameter data.");
-            free(data_ptr);
-            return ESP_ERR_INVALID_STATE;
-        }
-        // Send request to write characteristic data
-        error = mbc_serial_master_send_request(ctx, &request, data_ptr);
-        if (error == ESP_OK) {
-            ESP_LOGD(TAG, "%s: Good response for set cid(%u) = %s",
-                     __FUNCTION__, (unsigned)reg_info.cid, (char *)esp_err_to_name(error));
-        } else {
-            ESP_LOGD(TAG, "%s: Bad response to set cid(%u) = %s",
-                     __FUNCTION__, (unsigned)reg_info.cid, (char *)esp_err_to_name(error));
-        }
-        free(data_ptr);
-        // Set the type of parameter found in the table
-        *type = reg_info.param_type;
-    } else {
-        ESP_LOGE(TAG, "%s: The requested cid(%u) not found in the data dictionary.",
-                 __FUNCTION__, (unsigned)reg_info.cid);
-        error = ESP_ERR_INVALID_ARG;
-    }
-    return error;
-}
-
-// Set parameter value for characteristic selected by name and cid
-static esp_err_t mbc_serial_master_set_parameter_with(void *ctx, uint16_t cid, uint8_t uid,
-        uint8_t *value_ptr, uint8_t *type)
-{
-    MB_RETURN_ON_FALSE((value_ptr), ESP_ERR_INVALID_ARG, TAG, "value pointer is incorrect.");
-    MB_RETURN_ON_FALSE((type), ESP_ERR_INVALID_ARG, TAG, "type pointer is incorrect.");
-    esp_err_t error = ESP_ERR_INVALID_RESPONSE;
-    mb_param_request_t request;
-    mb_parameter_descriptor_t reg_info = {0};
-    uint8_t *data_ptr = NULL;
-    error = mbc_serial_master_set_request(ctx, cid, MB_PARAM_WRITE, &request, &reg_info);
-    if ((error == ESP_OK) && (cid == reg_info.cid)) {
-        if (request.slave_addr != MB_SLAVE_ADDR_PLACEHOLDER) {
-            ESP_LOGD(TAG, "%s: override uid %d = %d for cid(%u)",
-                     __FUNCTION__, (int)request.slave_addr, (int)uid, (unsigned)reg_info.cid);
-        }
-        request.slave_addr = uid; // override the UID
         MB_MASTER_ASSERT(xPortGetFreeHeapSize() > (reg_info.mb_size << 1));
         data_ptr = calloc(1, (reg_info.mb_size << 1)); // alloc parameter buffer
         if (!data_ptr) {
@@ -491,7 +480,7 @@ static esp_err_t mbc_serial_master_set_parameter_with(void *ctx, uint16_t cid, u
             return ESP_ERR_INVALID_STATE;
         }
         // Send request to write characteristic data
-        error = mbc_serial_master_send_request(ctx, &request, value_ptr);
+        error = mbc_serial_master_send_request_internal(ctx, &request, data_ptr, timeout_ms);
         if (error == ESP_OK) {
             ESP_LOGD(TAG, "%s: Good response for set cid(%u) = %s",
                      __FUNCTION__, (unsigned)reg_info.cid, (char *)esp_err_to_name(error));
@@ -508,6 +497,30 @@ static esp_err_t mbc_serial_master_set_parameter_with(void *ctx, uint16_t cid, u
         error = ESP_ERR_INVALID_ARG;
     }
     return error;
+}
+
+// Set parameter value for characteristic selected by cid
+static esp_err_t mbc_serial_master_set_parameter(void *ctx, uint16_t cid, uint8_t *value, uint8_t *type)
+{
+    return mbc_serial_master_set_parameter_internal(ctx, cid, 0, false, value, type, 0);
+}
+
+static esp_err_t mbc_serial_master_set_parameter_with_timeout(void *ctx, uint16_t cid, uint8_t *value, uint8_t *type, uint32_t timeout_ms)
+{
+    return mbc_serial_master_set_parameter_internal(ctx, cid, 0, false, value, type, timeout_ms);
+}
+
+// Set parameter value for characteristic selected by name and cid
+static esp_err_t mbc_serial_master_set_parameter_with(void *ctx, uint16_t cid, uint8_t uid,
+        uint8_t *value_ptr, uint8_t *type)
+{
+    return mbc_serial_master_set_parameter_internal(ctx, cid, uid, true, value_ptr, type, 0);
+}
+
+static esp_err_t mbc_serial_master_set_parameter_with_uid_timeout(void *ctx, uint16_t cid, uint8_t uid,
+        uint8_t *value_ptr, uint8_t *type, uint32_t timeout_ms)
+{
+    return mbc_serial_master_set_parameter_internal(ctx, cid, uid, true, value_ptr, type, timeout_ms);
 }
 
 static void mbc_serial_master_iface_free(void *ctx)
@@ -570,10 +583,15 @@ static esp_err_t mbc_serial_master_controller_create(void **ctx)
     mbm_controller_iface->get_cid_info = mbc_serial_master_get_cid_info;
     mbm_controller_iface->get_parameter = mbc_serial_master_get_parameter;
     mbm_controller_iface->get_parameter_with = mbc_serial_master_get_parameter_with;
+    mbm_controller_iface->get_parameter_tout = mbc_serial_master_get_parameter_with_timeout;
+    mbm_controller_iface->get_parameter_with_tout = mbc_serial_master_get_parameter_with_uid_timeout;
     mbm_controller_iface->send_request = mbc_serial_master_send_request;
+    mbm_controller_iface->send_request_tout = mbc_serial_master_send_request_with_timeout;
     mbm_controller_iface->set_descriptor = mbc_serial_master_set_descriptor;
     mbm_controller_iface->set_parameter = mbc_serial_master_set_parameter;
     mbm_controller_iface->set_parameter_with = mbc_serial_master_set_parameter_with;
+    mbm_controller_iface->set_parameter_tout = mbc_serial_master_set_parameter_with_timeout;
+    mbm_controller_iface->set_parameter_with_tout = mbc_serial_master_set_parameter_with_uid_timeout;
     mbm_controller_iface->mb_base = NULL;
     *ctx = mbm_controller_iface;
     return ESP_OK;

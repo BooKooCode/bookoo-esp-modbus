@@ -50,10 +50,15 @@ typedef struct {
 typedef esp_err_t (*iface_get_cid_info_fp)(void *, uint16_t, const mb_parameter_descriptor_t **);           /*!< Interface get_cid_info method */
 typedef esp_err_t (*iface_get_parameter_fp)(void *, uint16_t, uint8_t *, uint8_t *);                        /*!< Interface get_parameter method */
 typedef esp_err_t (*iface_get_parameter_with_fp)(void *, uint16_t, uint8_t, uint8_t *, uint8_t *);          /*!< Interface get_parameter_with method */
+typedef esp_err_t (*iface_get_parameter_tout_fp)(void *, uint16_t, uint8_t *, uint8_t *, uint32_t);         /*!< Interface get_parameter_with_timeout method */
+typedef esp_err_t (*iface_get_parameter_with_tout_fp)(void *, uint16_t, uint8_t, uint8_t *, uint8_t *, uint32_t); /*!< Interface get_parameter_with_uid_timeout method */
 typedef esp_err_t (*iface_send_request_fp)(void *, mb_param_request_t *, void *);                           /*!< Interface send_request method */
+typedef esp_err_t (*iface_send_request_tout_fp)(void *, mb_param_request_t *, void *, uint32_t);            /*!< Interface send_request_with_timeout method */
 typedef esp_err_t (*iface_mbm_set_descriptor_fp)(void *, const mb_parameter_descriptor_t *, const uint16_t); /*!< Interface set_descriptor method */
 typedef esp_err_t (*iface_set_parameter_fp)(void *, uint16_t, uint8_t *, uint8_t *);                        /*!< Interface set_parameter method */
 typedef esp_err_t (*iface_set_parameter_with_fp)(void *, uint16_t, uint8_t, uint8_t *, uint8_t *);          /*!< Interface set_parameter_with method */
+typedef esp_err_t (*iface_set_parameter_tout_fp)(void *, uint16_t, uint8_t *, uint8_t *, uint32_t);         /*!< Interface set_parameter_with_timeout method */
+typedef esp_err_t (*iface_set_parameter_with_tout_fp)(void *, uint16_t, uint8_t, uint8_t *, uint8_t *, uint32_t); /*!< Interface set_parameter_with_uid_timeout method */
 
 /**
  * @brief Modbus controller interface structure
@@ -72,10 +77,15 @@ typedef struct {
     iface_get_cid_info_fp get_cid_info;             /*!< Interface get_cid_info method */
     iface_get_parameter_fp get_parameter;           /*!< Interface get_parameter method */
     iface_get_parameter_with_fp get_parameter_with; /*!< Interface get_parameter_with method */
+    iface_get_parameter_tout_fp get_parameter_tout; /*!< Interface get_parameter_with_timeout method */
+    iface_get_parameter_with_tout_fp get_parameter_with_tout; /*!< Interface get_parameter_with_uid_timeout method */
     iface_send_request_fp send_request;             /*!< Interface send_request method */
+    iface_send_request_tout_fp send_request_tout;   /*!< Interface send_request_with_timeout method */
     iface_mbm_set_descriptor_fp set_descriptor;     /*!< Interface set_descriptor method */
     iface_set_parameter_fp set_parameter;           /*!< Interface set_parameter method */
     iface_set_parameter_with_fp set_parameter_with; /*!< Interface set_parameter_with method */
+    iface_set_parameter_tout_fp set_parameter_tout; /*!< Interface set_parameter_with_timeout method */
+    iface_set_parameter_with_tout_fp set_parameter_with_tout; /*!< Interface set_parameter_with_uid_timeout method */
 } mbm_controller_iface_t;
 
 #ifdef __cplusplus

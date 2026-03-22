@@ -59,6 +59,10 @@
     (typeof(*(array)) *item_ptr = (array); (item_ptr < &((array)[length])); item_ptr++)
 
 #define MB_CUST_DATA_LEN 100 // The length of custom command buffer
+#define MB_CUST_ROUTE_RANGE0_START 0
+#define MB_CUST_ROUTE_RANGE0_LEN   1
+#define MB_CUST_ROUTE_RANGE1_START 10
+#define MB_CUST_ROUTE_RANGE1_LEN   1
 
 static const char *TAG = "MASTER_TEST";
 
@@ -279,8 +283,21 @@ const mb_parameter_descriptor_t device_parameters[] = {
 const uint16_t num_device_parameters = (sizeof(device_parameters) / sizeof(device_parameters[0]));
 
 static char my_custom_data[MB_CUST_DATA_LEN] = {0}; // the custom data buffer
+static char my_custom_route_tag[16] = {0};
 
 static void *master_handle = NULL;
+
+static mb_exception_t copy_custom_frame(const char *route_tag, uint8_t *frame_ptr, uint16_t *len)
+{
+    MB_RETURN_ON_FALSE((route_tag && frame_ptr && len && *len && *len < (MB_CUST_DATA_LEN - 1)),
+                       MB_EX_ILLEGAL_DATA_VALUE, TAG, "incorrect custom frame buffer");
+    strncpy((char *)&my_custom_data[0], (char *)&frame_ptr[1], MB_CUST_DATA_LEN);
+    strncpy((char *)&my_custom_route_tag[0], route_tag, sizeof(my_custom_route_tag) - 1);
+    my_custom_route_tag[sizeof(my_custom_route_tag) - 1] = '\0';
+    ESP_LOGW(TAG, "Custom route handler: %s, frame_len=%u", my_custom_route_tag, (unsigned)*len);
+    ESP_LOG_BUFFER_HEXDUMP("CUSTOM_DATA", &my_custom_data[0], (*len - 1), ESP_LOG_WARN);
+    return MB_EX_NONE;
+}
 
 // The function to get pointer to parameter storage (instance) according to parameter description table
 static void *master_get_param_data(const mb_parameter_descriptor_t *param_descriptor)
@@ -318,8 +335,8 @@ static void *master_get_param_data(const mb_parameter_descriptor_t *param_descri
     assert(pdescr);                                                                                 \
     uint8_t type = 0;                                                                               \
     esp_err_t err = ESP_FAIL;                                                                       \
-    err = mbc_master_get_parameter(handle, pdescr->cid,                                             \
-                                    (uint8_t *)pinst, &type);                                       \
+    err = mbc_master_get_parameter_with_timeout(handle, pdescr->cid,                                \
+                                                (uint8_t *)pinst, &type, UPDATE_CIDS_TIMEOUT_MS);   \
     if (err == ESP_OK) {                                                                            \
         bool is_correct = true;                                                                     \
         if (pdescr->param_opts.opt3) {                                                              \
@@ -340,7 +357,7 @@ static void *master_get_param_data(const mb_parameter_descriptor_t *param_descri
                         master_handle,                                                              \
                         (int)pdescr->cid,                                                           \
                         (char *)pdescr->param_key);                                                 \
-            err = mbc_master_set_parameter(handle, cid, (uint8_t *)pinst, &type);                   \
+            err = mbc_master_set_parameter_with_timeout(handle, cid, (uint8_t *)pinst, &type, UPDATE_CIDS_TIMEOUT_MS);                   \
             if (err != ESP_OK) {                                                                    \
                 ESP_LOGE(TAG, "%p Characteristic #%d (%s) write fail, err = 0x%x (%s).",            \
                             master_handle,                                                          \
@@ -377,20 +394,34 @@ static void master_operation_func(void *arg)
 
     ESP_LOGI(TAG, "Start modbus test...");
 
-    char *pcustom_string = "Master";
+    char *pcustom_string = "Range0";
     mb_param_request_t req = {
         .slave_addr = MB_DEVICE_ADDR1,              // the slave UID to send the request
         .command = 0x41,                            // the custom function code,
-        .reg_start = 0,                             // unused,
+        .reg_start = MB_CUST_ROUTE_RANGE0_START,    // used locally for route selection,
         .reg_size = (strlen(pcustom_string) >> 1)   // length of the data to send (registers)
     };
 
     // Send the request with custom command (vendor specific)
     // This function supports sending of only even number of bytes
     // as instructed by req.reg_size (Modbus register = 2 bytes)
-    err = mbc_master_send_request(master_handle, &req, pcustom_string);
+    err = mbc_master_send_request_with_timeout(master_handle, &req, pcustom_string, 750);
     if (err != ESP_OK) {
         ESP_LOGE("CUSTOM_DATA", "Send custom request fail.");
+    } else {
+        ESP_LOGI(TAG, "Custom request routed by reg_start=%u using handler '%s'.",
+                 req.reg_start, my_custom_route_tag);
+    }
+
+    char *pcustom_string_range1 = "Range1";
+    req.reg_start = MB_CUST_ROUTE_RANGE1_START;
+    req.reg_size = (strlen(pcustom_string_range1) >> 1);
+    err = mbc_master_send_request_with_timeout(master_handle, &req, pcustom_string_range1, 750);
+    if (err != ESP_OK) {
+        ESP_LOGE("CUSTOM_DATA", "Send routed custom request fail.");
+    } else {
+        ESP_LOGI(TAG, "Custom request routed by reg_start=%u using handler '%s'.",
+                 req.reg_start, my_custom_route_tag);
     }
 
 #if CONFIG_FMB_CONTROLLER_SLAVE_ID_SUPPORT
@@ -409,7 +440,7 @@ static void master_operation_func(void *arg)
     uint8_t info_buf[CONFIG_FMB_CONTROLLER_SLAVE_ID_MAX_SIZE] = {0}; // The buffer to save slave ID
 
     // Send the request to retrieve slave ID information from slave (vendor specific command)
-    err = mbc_master_send_request(master_handle, &req, &info_buf[0]);
+    err = mbc_master_send_request_with_timeout(master_handle, &req, &info_buf[0], 750);
     if (err != ESP_OK) {
         ESP_LOGE("SLAVE_INFO", "Read slave info fail.");
     } else {
@@ -565,12 +596,20 @@ static void master_operation_func(void *arg)
 // handle the end of transaction according to the exception returned.
 mb_exception_t my_custom_handler(void *inst, uint8_t *frame_ptr, uint16_t *len)
 {
-    MB_RETURN_ON_FALSE((frame_ptr && len && *len && *len < (MB_CUST_DATA_LEN - 1)), MB_EX_ILLEGAL_DATA_VALUE, TAG,
-                       "incorrect custom frame buffer");
-    ESP_LOGD(TAG, "Custom handler, Frame ptr: %p, len: %u", frame_ptr, *len);
-    strncpy((char *)&my_custom_data[0], (char *)&frame_ptr[1], MB_CUST_DATA_LEN);
-    ESP_LOG_BUFFER_HEXDUMP("CUSTOM_DATA", &my_custom_data[0], (*len - 1), ESP_LOG_WARN);
-    return MB_EX_NONE;
+    (void)inst;
+    return copy_custom_frame("fallback", frame_ptr, len);
+}
+
+mb_exception_t my_custom_range0_handler(void *inst, uint8_t *frame_ptr, uint16_t *len)
+{
+    (void)inst;
+    return copy_custom_frame("range0", frame_ptr, len);
+}
+
+mb_exception_t my_custom_range1_handler(void *inst, uint8_t *frame_ptr, uint16_t *len)
+{
+    (void)inst;
+    return copy_custom_frame("range1", frame_ptr, len);
 }
 
 // Modbus master initialization
@@ -606,10 +645,23 @@ static esp_err_t master_init(void)
     err = mbc_set_handler(master_handle, override_command, my_custom_handler);
     MB_RETURN_ON_FALSE((err == ESP_OK), ESP_ERR_INVALID_STATE, TAG,
                        "could not override handler, returned (0x%x).", (int)err);
+    err = mbc_register_handler_range(master_handle, override_command,
+                                     MB_CUST_ROUTE_RANGE0_START, MB_CUST_ROUTE_RANGE0_LEN,
+                                     my_custom_range0_handler);
+    MB_RETURN_ON_FALSE((err == ESP_OK), ESP_ERR_INVALID_STATE, TAG,
+                       "could not register range0 handler, returned (0x%x).", (int)err);
+    err = mbc_register_handler_range(master_handle, override_command,
+                                     MB_CUST_ROUTE_RANGE1_START, MB_CUST_ROUTE_RANGE1_LEN,
+                                     my_custom_range1_handler);
+    MB_RETURN_ON_FALSE((err == ESP_OK), ESP_ERR_INVALID_STATE, TAG,
+                       "could not register range1 handler, returned (0x%x).", (int)err);
     mb_fn_handler_fp handler = NULL;
     err = mbc_get_handler(master_handle, override_command, &handler);
-    MB_RETURN_ON_FALSE((err == ESP_OK && handler == my_custom_handler), ESP_ERR_INVALID_STATE, TAG,
+    MB_RETURN_ON_FALSE((err == ESP_OK && handler != NULL), ESP_ERR_INVALID_STATE, TAG,
                        "could not get handler for command %d, returned (0x%x).", (int)override_command, (int)err);
+    ESP_LOGI(TAG, "Registered custom handlers: dispatcher + fallback + ranges [%u,%u) and [%u,%u).",
+             MB_CUST_ROUTE_RANGE0_START, MB_CUST_ROUTE_RANGE0_START + MB_CUST_ROUTE_RANGE0_LEN,
+             MB_CUST_ROUTE_RANGE1_START, MB_CUST_ROUTE_RANGE1_START + MB_CUST_ROUTE_RANGE1_LEN);
 
     // Set UART pin numbers
     err = uart_set_pin(MB_PORT_NUM, CONFIG_MB_UART_TXD, CONFIG_MB_UART_RXD,

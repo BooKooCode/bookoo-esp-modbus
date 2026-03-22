@@ -303,6 +303,25 @@ esp_err_t mbc_master_set_descriptor(void *ctx, const mb_parameter_descriptor_t *
 esp_err_t mbc_master_send_request(void *ctx, mb_param_request_t *request, void *data_ptr);
 
 /**
+ * @brief Send data request as defined in parameter request and use the explicit timeout for this call.
+ *        If timeout_ms is zero, the controller default response timeout is used.
+ *
+ * @param[in] ctx context pointer of the initialized modbus interface
+ * @param[in] request pointer to request structure of type mb_param_request_t
+ * @param[in] data_ptr pointer to data buffer to send or received data
+ * @param[in] timeout_ms explicit timeout for this request in milliseconds, 0 to use default timeout
+ *
+ * @return
+ *     - esp_err_t ESP_OK - request was successful
+ *     - esp_err_t ESP_ERR_INVALID_ARG - invalid argument of function
+ *     - esp_err_t ESP_ERR_INVALID_RESPONSE - an invalid response from slave
+ *     - esp_err_t ESP_ERR_TIMEOUT - operation timeout or no response from slave
+ *     - esp_err_t ESP_ERR_NOT_SUPPORTED - the request command is not supported by slave
+ *     - esp_err_t ESP_FAIL - slave returned an exception or other failure
+ */
+esp_err_t mbc_master_send_request_with_timeout(void *ctx, mb_param_request_t *request, void *data_ptr, uint32_t timeout_ms);
+
+/**
  * @brief Get information about supported characteristic defined as cid. Uses parameter description table to get
  *        this information. The function will check if characteristic defined as a cid parameter is supported
  *        and returns its description in param_info. Returns ESP_ERR_NOT_FOUND if characteristic is not supported.
@@ -343,6 +362,27 @@ esp_err_t mbc_master_get_cid_info(void *ctx, uint16_t cid, const mb_parameter_de
 esp_err_t mbc_master_get_parameter(void *ctx, uint16_t cid, uint8_t *value, uint8_t *type);
 
 /**
+ * @brief Read parameter from modbus slave device with an explicit timeout for this call.
+ *
+ * @param[in] ctx context pointer of the initialized modbus interface
+ * @param[in] cid id of the characteristic for parameter
+ * @param[out] value pointer to data buffer of parameter
+ * @param[out] type parameter type associated with the name returned from parameter description table.
+ * @param[in] timeout_ms explicit timeout for this request in milliseconds, 0 to use default timeout
+ *
+ * @return
+ *     - esp_err_t ESP_OK - request was successful
+ *     - esp_err_t ESP_ERR_INVALID_ARG - invalid argument of function or parameter descriptor
+ *     - esp_err_t ESP_ERR_INVALID_RESPONSE - an invalid response from slave
+ *     - esp_err_t ESP_ERR_INVALID_STATE - invalid state during data processing or allocation failure
+ *     - esp_err_t ESP_ERR_NOT_FOUND - the requested slave is not found or parameter is not found
+ *     - esp_err_t ESP_ERR_TIMEOUT - operation timed out and no response from slave
+ *     - esp_err_t ESP_ERR_NOT_SUPPORTED - the request command is not supported by slave
+ *     - esp_err_t ESP_FAIL - slave returned an exception or other failure
+ */
+esp_err_t mbc_master_get_parameter_with_timeout(void *ctx, uint16_t cid, uint8_t *value, uint8_t *type, uint32_t timeout_ms);
+
+/**
  * @brief Read parameter from modbus slave device whose name is defined by name and has cid.
  *        The additional data for request is taken from parameter description (lookup) table.
  *
@@ -367,6 +407,28 @@ esp_err_t mbc_master_get_parameter(void *ctx, uint16_t cid, uint8_t *value, uint
 esp_err_t mbc_master_get_parameter_with(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type);
 
 /**
+ * @brief Read parameter from specific modbus slave device with an explicit timeout for this call.
+ *
+ * @param[in] ctx context pointer of the initialized modbus interface
+ * @param[in] cid id of the characteristic for parameter
+ * @param[in] uid unit identificator of the slave to set parameter
+ * @param[out] value pointer to data buffer of parameter
+ * @param[out] type parameter type associated with the name returned from parameter description table.
+ * @param[in] timeout_ms explicit timeout for this request in milliseconds, 0 to use default timeout
+ *
+ * @return
+ *     - esp_err_t ESP_OK - request was successful
+ *     - esp_err_t ESP_ERR_INVALID_ARG - invalid argument of function or parameter descriptor
+ *     - esp_err_t ESP_ERR_INVALID_RESPONSE - an invalid response from slave
+ *     - esp_err_t ESP_ERR_INVALID_STATE - invalid state during data processing or allocation failure
+ *     - esp_err_t ESP_ERR_NOT_FOUND - the requested slave is not found or parameter is not found
+ *     - esp_err_t ESP_ERR_TIMEOUT - operation timed out and no response from slave
+ *     - esp_err_t ESP_ERR_NOT_SUPPORTED - the request command is not supported by slave
+ *     - esp_err_t ESP_FAIL - slave returned an exception or other failure
+ */
+esp_err_t mbc_master_get_parameter_with_uid_timeout(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type, uint32_t timeout_ms);
+
+/**
  * @brief Set characteristic's value defined as a name and cid parameter.
  *        The additional data for cid parameter request is taken from master parameter lookup table.
  *
@@ -386,6 +448,27 @@ esp_err_t mbc_master_get_parameter_with(void *ctx, uint16_t cid, uint8_t uid, ui
  *     - esp_err_t ESP_FAIL - slave returned an exception or other failure
 */
 esp_err_t mbc_master_set_parameter(void *ctx, uint16_t cid, uint8_t *value, uint8_t *type);
+
+/**
+ * @brief Set characteristic's value with an explicit timeout for this call.
+ *
+ * @param[in] ctx context pointer of the initialized modbus interface
+ * @param[in] cid id of the characteristic for parameter
+ * @param[out] value pointer to data buffer of parameter
+ * @param[out] type pointer to parameter type associated with the name returned from parameter lookup table.
+ * @param[in] timeout_ms explicit timeout for this request in milliseconds, 0 to use default timeout
+ *
+ * @return
+ *     - esp_err_t ESP_OK - request was successful and value was saved in the slave device registers
+ *     - esp_err_t ESP_ERR_INVALID_ARG - invalid argument of function or parameter descriptor
+ *     - esp_err_t ESP_ERR_INVALID_RESPONSE - an invalid response from slave during processing of parameter
+ *     - esp_err_t ESP_ERR_INVALID_STATE - invalid state during data processing or allocation failure
+ *     - esp_err_t ESP_ERR_NOT_FOUND - the requested slave is not found
+ *     - esp_err_t ESP_ERR_TIMEOUT - operation timed out and no response from slave
+ *     - esp_err_t ESP_ERR_NOT_SUPPORTED - the request command is not supported by slave
+ *     - esp_err_t ESP_FAIL - slave returned an exception or other failure
+ */
+esp_err_t mbc_master_set_parameter_with_timeout(void *ctx, uint16_t cid, uint8_t *value, uint8_t *type, uint32_t timeout_ms);
 
 /**
  * @brief Set characteristic's value defined as a name and cid parameter.
@@ -408,6 +491,28 @@ esp_err_t mbc_master_set_parameter(void *ctx, uint16_t cid, uint8_t *value, uint
  *     - esp_err_t ESP_FAIL - slave returned an exception or other failure
 */
 esp_err_t mbc_master_set_parameter_with(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type);
+
+/**
+ * @brief Set characteristic's value for specific slave with an explicit timeout for this call.
+ *
+ * @param[in] ctx context pointer of the initialized modbus interface
+ * @param[in] cid id of the characteristic for parameter
+ * @param[in] uid unit identificator of the slave to set parameter
+ * @param[out] value pointer to data buffer of parameter
+ * @param[out] type pointer to parameter type associated with the name returned from parameter lookup table.
+ * @param[in] timeout_ms explicit timeout for this request in milliseconds, 0 to use default timeout
+ *
+ * @return
+ *     - esp_err_t ESP_OK - request was successful and value was saved in the slave device registers
+ *     - esp_err_t ESP_ERR_INVALID_ARG - invalid argument of function or parameter descriptor
+ *     - esp_err_t ESP_ERR_INVALID_RESPONSE - an invalid response from slave during processing of parameter
+ *     - esp_err_t ESP_ERR_INVALID_STATE - invalid state during data processing or allocation failure
+ *     - esp_err_t ESP_ERR_NOT_FOUND - the requested slave is not found
+ *     - esp_err_t ESP_ERR_TIMEOUT - operation timed out and no response from slave
+ *     - esp_err_t ESP_ERR_NOT_SUPPORTED - the request command is not supported by slave
+ *     - esp_err_t ESP_FAIL - slave returned an exception or other failure
+ */
+esp_err_t mbc_master_set_parameter_with_uid_timeout(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type, uint32_t timeout_ms);
 
 /**
  * @brief Holding register read/write callback function

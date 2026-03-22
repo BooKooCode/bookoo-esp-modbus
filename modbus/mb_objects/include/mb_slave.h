@@ -27,6 +27,14 @@ mb_err_enum_t mbs_delete_handler(mb_base_t *inst, uint8_t func_code);
 // The helper function to get count of handlers for slave
 mb_err_enum_t mbs_get_handler_count(mb_base_t *inst, uint16_t *count);
 
+// The helper function to register range-specific function handler for slave
+mb_err_enum_t mbs_router_register_range(mb_base_t *inst, uint8_t func_code,
+                                        uint16_t reg_start, uint16_t reg_len, mb_fn_handler_fp handler);
+
+// The helper function to unregister range-specific function handler for slave
+mb_err_enum_t mbs_router_unregister_range(mb_base_t *inst, uint8_t func_code,
+                                          uint16_t reg_start, uint16_t reg_len);
+
 #ifdef __cplusplus
 }
 #endif
