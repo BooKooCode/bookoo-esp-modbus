@@ -6,10 +6,45 @@
 #include "esp_err.h"
 #include "mbc_master.h"         // for master interface define
 #include "mbc_slave.h"          // for slave interface define
+#include "mb_proto.h"           // for standard Modbus function codes
 #include "esp_modbus_common.h"  // for public interface defines
 #include "mb_wrap_router.h"     // for wrap router registration helpers
 
 static const char TAG[] __attribute__((unused)) = "MB_CONTROLLER_COMMON";
+
+static bool mbc_is_slave_range_func_code_supported(uint8_t func_code)
+{
+    switch (func_code) {
+#if MB_FUNC_READ_COILS_ENABLED
+    case MB_FUNC_READ_COILS:
+#endif
+#if MB_FUNC_READ_DISCRETE_INPUTS_ENABLED
+    case MB_FUNC_READ_DISCRETE_INPUTS:
+#endif
+#if MB_FUNC_READ_HOLDING_ENABLED
+    case MB_FUNC_READ_HOLDING_REGISTER:
+#endif
+#if MB_FUNC_READ_INPUT_ENABLED
+    case MB_FUNC_READ_INPUT_REGISTER:
+#endif
+#if MB_FUNC_WRITE_COIL_ENABLED
+    case MB_FUNC_WRITE_SINGLE_COIL:
+#endif
+#if MB_FUNC_WRITE_HOLDING_ENABLED
+    case MB_FUNC_WRITE_REGISTER:
+#endif
+#if MB_FUNC_WRITE_MULTIPLE_COILS_ENABLED
+    case MB_FUNC_WRITE_MULTIPLE_COILS:
+#endif
+#if MB_FUNC_WRITE_MULTIPLE_HOLDING_ENABLED
+    case MB_FUNC_WRITE_MULTIPLE_REGISTERS:
+#endif
+        return true;
+
+    default:
+        return false;
+    }
+}
 
 /**
  * Register or override command handler for the command in object command handler table
@@ -107,6 +142,10 @@ esp_err_t mbc_register_handler_range(void *ctx, uint8_t func_code, uint16_t reg_
     mb_base_t *mb_obj = (mb_base_t *)mb_controller->mb_base;
     MB_RETURN_ON_FALSE(mb_obj, ESP_ERR_INVALID_STATE, TAG,
                        "Controller interface is not correctly initialized.");
+    if (!mb_obj->descr.is_master) {
+        MB_RETURN_ON_FALSE(mbc_is_slave_range_func_code_supported(func_code), ESP_ERR_NOT_SUPPORTED, TAG,
+                           "Slave range subroutes support only standard single-range function codes.");
+    }
     mb_err_enum_t ret = mb_obj->descr.is_master
                             ? mbm_router_register_range(mb_controller->mb_base, func_code,
                                                         reg_start, reg_len, handler)

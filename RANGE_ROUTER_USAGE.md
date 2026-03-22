@@ -27,6 +27,7 @@ esp_err_t mbc_unregister_handler_range(void *ctx, uint8_t func_code,
 6. `reg_len` 必须大于 0。
 7. 重叠范围会被拒绝，返回 `ESP_ERR_INVALID_ARG`。
 8. `0x17` 不支持范围子路由注册；如需自定义处理，应继续使用 `mbc_set_handler()` 注册功能码级 handler。
+9. slave 侧仅支持 `0x01`、`0x02`、`0x03`、`0x04`、`0x05`、`0x06`、`0x0F`、`0x10` 这 8 个标准单区间功能码的范围子路由注册。
 
 ---
 
@@ -65,6 +66,7 @@ mbc_register_handler_range(master_handle, fc, 10, 1, my_range1_handler);
 3. 如果你希望未命中范围时继续走默认处理器，才需要额外调用 `mbc_set_handler()`。
 4. 如果同一个功能码既注册了 fallback，又注册了 range，那么命中范围时不会再执行 fallback；只有未命中范围时才会执行 fallback。
 5. `0x17` 不能调用 `mbc_register_handler_range()`；该功能码只支持功能码级 handler。
+6. master 侧不额外限制功能码白名单；只要请求结构能明确给出单区间 `reg_start + reg_size`，就可以参与范围匹配。
 
 ### 2.2 `reg_start` 该填什么
 
@@ -119,6 +121,7 @@ mbc_register_handler_range(slave_handle, fc, range1_start, range1_len,
 3. 如果你希望未命中范围时继续走默认处理器，才需要额外调用 `mbc_set_handler()`。
 4. 如果同一个功能码既注册了 fallback，又注册了 range，那么命中范围时不会再执行 fallback；只有未命中范围时才会执行 fallback。
 5. `0x17` 不能调用 `mbc_register_handler_range()`；该功能码只支持功能码级 handler。
+6. slave 侧仅支持 `0x01`、`0x02`、`0x03`、`0x04`、`0x05`、`0x06`、`0x0F`、`0x10` 的范围子路由；其他功能码即使有默认 handler，也不能注册范围子路由。
 
 ### 3.2 `reg_start` 该填什么
 
@@ -168,6 +171,7 @@ mbc_register_handler_range(slave_handle, fc, range1_start, range1_len,
 5. 只注册 range 也能工作；`mbc_set_handler()` 不是前置必需步骤
 6. 同一功能码下若同时存在 range 和 fallback，则范围命中优先，fallback 只在未命中时触发
 7. `0x17` 不支持 range routing，也不支持范围子路由注册；只能走功能码级 handler
+8. slave 侧只对白名单中的标准单区间功能码开放范围子路由注册
 
 ---
 
@@ -182,3 +186,4 @@ mbc_register_handler_range(slave_handle, fc, range1_start, range1_len,
 7. `mbc_set_handler()` 不是必须，只有需要 fallback 时才注册
 8. 命中范围时只走范围 handler，不再走 fallback
 9. `0x17` 不支持范围子路由，继续使用功能码级 handler
+10. slave 侧范围子路由只支持 `0x01`、`0x02`、`0x03`、`0x04`、`0x05`、`0x06`、`0x0F`、`0x10`
