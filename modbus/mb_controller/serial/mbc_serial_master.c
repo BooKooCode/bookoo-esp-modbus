@@ -434,7 +434,7 @@ static esp_err_t mbc_serial_master_get_parameter_with_timeout(void *ctx, uint16_
 }
 
 // Get parameter data for corresponding characteristic
-static esp_err_t mbc_serial_master_get_parameter_with(void *ctx, uint16_t cid, uint8_t uid,
+static esp_err_t mbc_serial_master_get_parameter_with_uid(void *ctx, uint16_t cid, uint8_t uid,
         uint8_t *value_ptr, uint8_t *type)
 {
     return mbc_serial_master_get_parameter_internal(ctx, cid, uid, true, value_ptr, type, 0);
@@ -511,7 +511,7 @@ static esp_err_t mbc_serial_master_set_parameter_with_timeout(void *ctx, uint16_
 }
 
 // Set parameter value for characteristic selected by name and cid
-static esp_err_t mbc_serial_master_set_parameter_with(void *ctx, uint16_t cid, uint8_t uid,
+static esp_err_t mbc_serial_master_set_parameter_with_uid(void *ctx, uint16_t cid, uint8_t uid,
         uint8_t *value_ptr, uint8_t *type)
 {
     return mbc_serial_master_set_parameter_internal(ctx, cid, uid, true, value_ptr, type, 0);
@@ -582,14 +582,14 @@ static esp_err_t mbc_serial_master_controller_create(void **ctx)
     mbm_controller_iface->stop = mbc_serial_master_stop;
     mbm_controller_iface->get_cid_info = mbc_serial_master_get_cid_info;
     mbm_controller_iface->get_parameter = mbc_serial_master_get_parameter;
-    mbm_controller_iface->get_parameter_with = mbc_serial_master_get_parameter_with;
+    mbm_controller_iface->get_parameter_with_uid = mbc_serial_master_get_parameter_with_uid;
     mbm_controller_iface->get_parameter_tout = mbc_serial_master_get_parameter_with_timeout;
     mbm_controller_iface->get_parameter_with_tout = mbc_serial_master_get_parameter_with_uid_timeout;
     mbm_controller_iface->send_request = mbc_serial_master_send_request;
     mbm_controller_iface->send_request_tout = mbc_serial_master_send_request_with_timeout;
     mbm_controller_iface->set_descriptor = mbc_serial_master_set_descriptor;
     mbm_controller_iface->set_parameter = mbc_serial_master_set_parameter;
-    mbm_controller_iface->set_parameter_with = mbc_serial_master_set_parameter_with;
+    mbm_controller_iface->set_parameter_with_uid = mbc_serial_master_set_parameter_with_uid;
     mbm_controller_iface->set_parameter_tout = mbc_serial_master_set_parameter_with_timeout;
     mbm_controller_iface->set_parameter_with_tout = mbc_serial_master_set_parameter_with_uid_timeout;
     mbm_controller_iface->mb_base = NULL;

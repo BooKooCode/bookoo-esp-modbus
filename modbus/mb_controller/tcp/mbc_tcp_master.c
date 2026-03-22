@@ -443,7 +443,7 @@ static esp_err_t mbc_tcp_master_get_parameter_with_timeout(void *ctx, uint16_t c
 }
 
 // Get parameter data for corresponding characteristic
-static esp_err_t mbc_tcp_master_get_parameter_with(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type)
+static esp_err_t mbc_tcp_master_get_parameter_with_uid(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type)
 {
     return mbc_tcp_master_get_parameter_internal(ctx, cid, uid, true, value, type, 0);
 }
@@ -526,7 +526,7 @@ static esp_err_t mbc_tcp_master_set_parameter_with_timeout(void *ctx, uint16_t c
 }
 
 // Set parameter value for characteristic selected by name and cid
-static esp_err_t mbc_tcp_master_set_parameter_with(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type)
+static esp_err_t mbc_tcp_master_set_parameter_with_uid(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type)
 {
     return mbc_tcp_master_set_parameter_internal(ctx, cid, uid, true, value, type, 0);
 }
@@ -612,14 +612,14 @@ esp_err_t mbc_tcp_master_controller_create(void **ctx)
     mbm_controller_iface->stop = mbc_tcp_master_stop;
     mbm_controller_iface->get_cid_info = mbc_tcp_master_get_cid_info;
     mbm_controller_iface->get_parameter = mbc_tcp_master_get_parameter;
-    mbm_controller_iface->get_parameter_with = mbc_tcp_master_get_parameter_with;
+    mbm_controller_iface->get_parameter_with_uid = mbc_tcp_master_get_parameter_with_uid;
     mbm_controller_iface->get_parameter_tout = mbc_tcp_master_get_parameter_with_timeout;
     mbm_controller_iface->get_parameter_with_tout = mbc_tcp_master_get_parameter_with_uid_timeout;
     mbm_controller_iface->send_request = mbc_tcp_master_send_request;
     mbm_controller_iface->send_request_tout = mbc_tcp_master_send_request_with_timeout;
     mbm_controller_iface->set_descriptor = mbc_tcp_master_set_descriptor;
     mbm_controller_iface->set_parameter = mbc_tcp_master_set_parameter;
-    mbm_controller_iface->set_parameter_with = mbc_tcp_master_set_parameter_with;
+    mbm_controller_iface->set_parameter_with_uid = mbc_tcp_master_set_parameter_with_uid;
     mbm_controller_iface->set_parameter_tout = mbc_tcp_master_set_parameter_with_timeout;
     mbm_controller_iface->set_parameter_with_tout = mbc_tcp_master_set_parameter_with_uid_timeout;
 

@@ -486,7 +486,7 @@ The function gets information about each characteristic supported in the data di
 
 The function reads the data of a characteristic defined in the parameters of a Modbus slave device. The additional data for request is taken from parameter description table.
 
-:cpp:func:`mbc_master_get_parameter_with`
+:cpp:func:`mbc_master_get_parameter_with_uid`
 
 The function allows to read the data of a characteristic from any slave device addressed by `uid` parameter of the function instead of slave address defined in the data dictionary. In this case the ``mb_slave_addr`` field of the parameter descriptor :cpp:type:`mb_parameter_descriptor_t` shall be equal to ``MB_SLAVE_ADDR_PLACEHOLDER``. In case of TCP type of communication the connection phase should be completed prior call of this function.
 
@@ -525,7 +525,7 @@ Example:
 
 The function writes characteristic's value defined as `cid` parameter in corresponded slave device. The additional data for parameter request is taken from master parameter description table.
 
-:cpp:func:`mbc_master_set_parameter_with`
+:cpp:func:`mbc_master_set_parameter_with_uid`
 
 The function is similar to previous function but allows to set the data of a characteristic in any slave device addressed by `uid` parameter of the function instead of the slave address ``mb_slave_addr`` field defined in the data dictionary. The corresponded ``mb_slave_addr`` field for the characteristic in the object dictionary shall be defined as ``MB_SLAVE_ADDR_PLACEHOLDER``. 
 

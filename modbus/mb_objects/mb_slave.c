@@ -112,8 +112,6 @@ static bool mbs_router_parse_request_range(uint8_t func_code,
         return false;
 #endif
 
-        return true;
-
     default:
         return false;
     }

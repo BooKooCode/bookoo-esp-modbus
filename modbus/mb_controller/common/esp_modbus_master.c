@@ -104,7 +104,7 @@ esp_err_t mbc_master_set_parameter_with_timeout(void *ctx, uint16_t cid, uint8_t
 /**
  * Set parameter value for characteristic selected by name and cid
  */
-esp_err_t mbc_master_set_parameter_with(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type)
+esp_err_t mbc_master_set_parameter_with_uid(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type)
 {
     return mbc_master_set_parameter_with_uid_timeout(ctx, cid, uid, value, type, 0);
 }
@@ -152,7 +152,7 @@ esp_err_t mbc_master_get_parameter_with_timeout(void *ctx, uint16_t cid, uint8_t
 /**
  * Get parameter data for corresponding characteristic
  */
-esp_err_t mbc_master_get_parameter_with(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type)
+esp_err_t mbc_master_get_parameter_with_uid(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type)
 {
     return mbc_master_get_parameter_with_uid_timeout(ctx, cid, uid, value, type, 0);
 }

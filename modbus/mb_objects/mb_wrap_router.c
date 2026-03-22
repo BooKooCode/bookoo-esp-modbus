@@ -132,8 +132,12 @@ mb_err_enum_t mb_wrap_router_set_default_locked(mb_wrap_router_state_t *state,
 {
     mb_wrap_router_bucket_t *bucket = mb_wrap_router_find_bucket(state, func_code);
     if (bucket) {
+        mb_err_enum_t status = mb_wrap_router_ensure_dispatcher_locked(state, descriptor, func_code, dispatcher);
+        if (status != MB_ENOERR) {
+            return status;
+        }
         bucket->default_handler = handler;
-        return mb_wrap_router_ensure_dispatcher_locked(state, descriptor, func_code, dispatcher);
+        return MB_ENOERR;
     }
     return mb_set_handler(descriptor, func_code, handler);
 }
@@ -244,11 +248,19 @@ mb_err_enum_t mb_wrap_router_select_locked(mb_wrap_router_state_t *state,
                 }
             }
         }
-        return bucket->default_handler ? MB_ENOERR : MB_ENORES;
+        if (bucket->default_handler) {
+            *selected_handler = bucket->default_handler;
+            return MB_ENOERR;
+        }
+        return MB_ENORES;
     }
 
     mb_fn_handler_fp handler = NULL;
-    return mb_get_handler(descriptor, func_code, &handler);
+    mb_err_enum_t status = mb_get_handler(descriptor, func_code, &handler);
+    if ((status == MB_ENOERR) && handler) {
+        *selected_handler = handler;
+    }
+    return status;
 }
 
 void mb_wrap_router_set_pending(mb_wrap_router_state_t *state,
