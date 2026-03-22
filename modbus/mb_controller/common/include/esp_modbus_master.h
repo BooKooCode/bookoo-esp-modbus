@@ -404,7 +404,7 @@ esp_err_t mbc_master_get_parameter_with_timeout(void *ctx, uint16_t cid, uint8_t
  *     - esp_err_t ESP_ERR_NOT_FOUND - the parameter is not found in the parameter description table
  *     - esp_err_t ESP_FAIL - slave returned an exception or other failure
 */
-esp_err_t mbc_master_get_parameter_with(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type);
+esp_err_t mbc_master_get_parameter_with_uid(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type);
 
 /**
  * @brief Read parameter from specific modbus slave device with an explicit timeout for this call.
@@ -490,7 +490,7 @@ esp_err_t mbc_master_set_parameter_with_timeout(void *ctx, uint16_t cid, uint8_t
  *     - esp_err_t ESP_ERR_NOT_SUPPORTED - the request command is not supported by slave
  *     - esp_err_t ESP_FAIL - slave returned an exception or other failure
 */
-esp_err_t mbc_master_set_parameter_with(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type);
+esp_err_t mbc_master_set_parameter_with_uid(void *ctx, uint16_t cid, uint8_t uid, uint8_t *value, uint8_t *type);
 
 /**
  * @brief Set characteristic's value for specific slave with an explicit timeout for this call.
